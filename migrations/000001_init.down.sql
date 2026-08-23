@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS link_queue;
+DROP TABLE IF EXISTS contacts;
