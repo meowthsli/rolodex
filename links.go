@@ -19,7 +19,9 @@ func NewLinksRepository(db *sql.DB) *LinksRepository {
 }
 
 // AddLink inserts a new row into link_queue and returns the saved link.
-func (r *LinksRepository) AddLink(url string) (LinkQueue, error) {
+// The URL is stored without its scheme prefix.
+func (r *LinksRepository) AddLink(rawURL string) (LinkQueue, error) {
+	url := normalizeURL(rawURL)
 	result, err := sq.Exec(r.db, sq.SQLite.InsertInto(LQ).Columns(LQ.URL).Values(url))
 	if err != nil {
 		return LinkQueue{}, err
@@ -33,7 +35,9 @@ func (r *LinksRepository) AddLink(url string) (LinkQueue, error) {
 }
 
 // UpdateLink changes the URL of an existing link_queue row by id.
-func (r *LinksRepository) UpdateLink(id int, url string) (LinkQueue, error) {
+// The URL is stored without its scheme prefix.
+func (r *LinksRepository) UpdateLink(id int, rawURL string) (LinkQueue, error) {
+	url := normalizeURL(rawURL)
 	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).Set(LQ.URL.Set(url)).Where(LQ.ID.Eq(sq.Value(id))))
 	if err != nil {
 		return LinkQueue{}, err
@@ -69,10 +73,22 @@ func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
 	return link, nil
 }
 
-// SaveScrapeResult stores the fetched content and stamps last_scrapped.
+// SaveScrapeResult stores the fetched content and stamps last_scrapped,
+// clearing any previous error.
 func (r *LinksRepository) SaveScrapeResult(id int, content string) error {
 	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).
 		Set(LQ.Content.Set(content)).
+		Set(LQ.Error.Set(sq.Expr("NULL"))).
+		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
+		Where(LQ.ID.Eq(sq.Value(id))))
+	return err
+}
+
+// SaveScrapeError records a failure for the given link and stamps
+// last_scrapped so the link is not retried.
+func (r *LinksRepository) SaveScrapeError(id int, errMsg string) error {
+	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).
+		Set(LQ.Error.Set(errMsg)).
 		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
 		Where(LQ.ID.Eq(sq.Value(id))))
 	return err

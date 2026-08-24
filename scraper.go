@@ -67,15 +67,22 @@ func (s *Scraper) scrapeOnce() error {
 		return nil
 	}
 
-	resp, err := s.client.Get(link.URL)
-	if err != nil {
-		return err
+	var resp *http.Response
+	var getErr error
+	for _, scheme := range []string{"https", "http"} {
+		resp, getErr = s.client.Get(scheme + "://" + link.URL)
+		if getErr == nil {
+			break
+		}
+	}
+	if getErr != nil {
+		return s.repo.SaveScrapeError(link.ID, getErr.Error())
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return s.repo.SaveScrapeError(link.ID, err.Error())
 	}
 
 	return s.repo.SaveScrapeResult(link.ID, string(body))

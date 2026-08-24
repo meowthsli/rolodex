@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"strings"
 
 	sq "github.com/bokwoon95/sq"
 )
@@ -13,6 +14,7 @@ type LINK_QUEUE struct {
 	URL          sq.StringField
 	Content      sq.StringField `sq:"content"`
 	LastScrapped sq.TimeField   `sq:"last_scrapped"`
+	Error        sq.StringField `sq:"error"`
 }
 
 var LQ = sq.New[LINK_QUEUE]("lq")
@@ -23,6 +25,24 @@ type LinkQueue struct {
 	URL          string
 	Content      string
 	LastScrapped sql.NullTime
+	Error        sql.NullString
+}
+
+// normalizeURL strips a leading http:// or https:// scheme prefix.
+func normalizeURL(raw string) string {
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		return raw[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		return raw[len("http://"):]
+	}
+	return raw
+}
+
+// NewLink builds a LinkQueue with the scheme prefix removed from the URL.
+func NewLink(rawURL string) LinkQueue {
+	return LinkQueue{URL: normalizeURL(rawURL)}
 }
 
 // Mapper scans a row from the link_queue table into a LinkQueue.
@@ -32,5 +52,6 @@ func Mapper(row *sq.Row) LinkQueue {
 	l.URL = row.StringField(LQ.URL)
 	l.Content = row.StringField(LQ.Content)
 	l.LastScrapped = row.NullTimeField(LQ.LastScrapped)
+	l.Error = row.NullStringField(LQ.Error)
 	return l
 }

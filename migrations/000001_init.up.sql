@@ -7,5 +7,8 @@ CREATE TABLE IF NOT EXISTS contacts (
 
 CREATE TABLE IF NOT EXISTS link_queue (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	url TEXT NOT NULL
+	url TEXT NOT NULL,
+	content TEXT,
+	last_scrapped DATETIME,
+	error TEXT
 );
