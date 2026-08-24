@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	sq "github.com/bokwoon95/sq"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -32,11 +34,23 @@ func main() {
 	}
 	defer db.Close()
 
+	logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{
+		ShowTimeTaken: true,
+		HideArgs:      true,
+	})
+	sq.SetDefaultLogQuery(func(ctx context.Context, queryStats sq.QueryStats) {
+		// You can choose to only log queries if they encountered an error.
+		// if queryStats.Err == nil {
+		//     return
+		// }
+		logger.SqLogQuery(ctx, queryStats)
+	})
+
 	repo := NewLinksRepository(db)
 
 	// NewLink dedupes by normalized URL; an already-existing link is not an
 	// error, we simply skip it.
-	_, err = repo.NewLink("https://example.com")
+	_, err = repo.NewLink("https://localhost")
 	if err != nil && !errors.Is(err, ErrLinkExists) {
 		log.Fatal(err)
 	}

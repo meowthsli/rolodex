@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -89,12 +90,20 @@ func (s *Scraper) scrapeOnce() error {
 	}
 
 	content := string(body)
-	if err := s.repo.SaveScrapeResult(link.ID, content); err != nil {
+
+	// Spider: extract readable text and discover links, then persist once.
+	base := chosenScheme + "://" + link.URL
+	readable := ""
+	if baseURL, err := url.Parse(base); err == nil {
+		if r, rerr := extractReadable(baseURL, content); rerr == nil {
+			readable = r
+		}
+	}
+
+	if err := s.repo.SaveScrapeResult(link.ID, content, readable); err != nil {
 		return err
 	}
 
-	// Spider: discover links in the page and enqueue any that are new.
-	base := chosenScheme + "://" + link.URL
 	discovered, err := extractLinks(base, content)
 	if err != nil {
 		return err

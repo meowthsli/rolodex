@@ -193,6 +193,55 @@ func TestScraperRecordsError(t *testing.T) {
 	}
 }
 
+// TestScraperSavesReadableText verifies that, alongside the raw page content,
+// the scraper stores the readable text extracted by go-readability.
+func TestScraperSavesReadableText(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<html><head><title>T</title></head><body>
+			<nav>menu menu menu</nav>
+			<article><p>This is the meaningful readable paragraph.</p></article>
+			<script>var x = 1;</script>
+		</body></html>`)
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL + "/")
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, 20*time.Millisecond)
+	scraper.Start()
+	defer scraper.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lk, err := repo.GetLink(seed.ID)
+		if err == nil && lk.LastScrapped.Valid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for seed scrape")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	scraper.Stop()
+
+	got, err := repo.GetLink(seed.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if got.ReadableText == "" {
+		t.Errorf("expected readable_text to be populated")
+	}
+	if !strings.Contains(got.ReadableText, "meaningful readable paragraph") {
+		t.Errorf("readable_text missing expected content: %q", got.ReadableText)
+	}
+}
+
 // TestExtractLinks verifies that links are extracted from the relevant HTML
 // attributes, resolved against the base URL, filtered to http/https, and
 // deduplicated.

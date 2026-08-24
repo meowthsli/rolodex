@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/go-shiori/go-readability"
 	"golang.org/x/net/html"
 )
 
@@ -69,4 +70,14 @@ func resolveLink(base *url.URL, raw string) (string, error) {
 		return "", nil
 	}
 	return resolved.String(), nil
+}
+
+// extractReadable returns the main readable text content of an HTML page using
+// the go-readability library, resolved against the page's base URL.
+func extractReadable(base *url.URL, htmlBody string) (string, error) {
+	article, err := readability.FromReader(strings.NewReader(htmlBody), base)
+	if err != nil {
+		return "", err
+	}
+	return article.TextContent, nil
 }
