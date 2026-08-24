@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -69,9 +70,11 @@ func (s *Scraper) scrapeOnce() error {
 
 	var resp *http.Response
 	var getErr error
+	chosenScheme := ""
 	for _, scheme := range []string{"https", "http"} {
 		resp, getErr = s.client.Get(scheme + "://" + link.URL)
 		if getErr == nil {
+			chosenScheme = scheme
 			break
 		}
 	}
@@ -85,5 +88,22 @@ func (s *Scraper) scrapeOnce() error {
 		return s.repo.SaveScrapeError(link.ID, err.Error())
 	}
 
-	return s.repo.SaveScrapeResult(link.ID, string(body))
+	content := string(body)
+	if err := s.repo.SaveScrapeResult(link.ID, content); err != nil {
+		return err
+	}
+
+	// Spider: discover links in the page and enqueue any that are new.
+	base := chosenScheme + "://" + link.URL
+	discovered, err := extractLinks(base, content)
+	if err != nil {
+		return err
+	}
+	for _, u := range discovered {
+		if _, err := s.repo.NewLink(u); err != nil && !errors.Is(err, ErrLinkExists) {
+			return err
+		}
+	}
+
+	return nil
 }

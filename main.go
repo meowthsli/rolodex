@@ -48,7 +48,7 @@ func main() {
 
 	fmt.Printf("link_queue rows: %+v\n", links)
 
-	scraper := NewScraper(repo, &http.Client{}, 5*time.Second)
+	scraper := NewScraper(repo, &http.Client{}, 1*time.Second)
 	scraper.Start()
 	defer scraper.Stop()
 

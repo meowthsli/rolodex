@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -189,5 +190,100 @@ func TestScraperRecordsError(t *testing.T) {
 	}
 	if good.Content == "" {
 		t.Errorf("expected content for good link")
+	}
+}
+
+// TestExtractLinks verifies that links are extracted from the relevant HTML
+// attributes, resolved against the base URL, filtered to http/https, and
+// deduplicated.
+func TestExtractLinks(t *testing.T) {
+	base := "http://example.com/dir/page"
+	htmlBody := `<html><body>
+		<a href="/a">a</a>
+		<a href="b">b</a>
+		<a href="https://x.com/y">x</a>
+		<a href="//other.com/z">proto</a>
+		<a href="mailto:foo@bar.com">mail</a>
+		<a href="javascript:void(0)">js</a>
+		<iframe src="/frame"></iframe>
+		<a href="/a">dup</a>
+	</body></html>`
+
+	got, err := extractLinks(base, htmlBody)
+	if err != nil {
+		t.Fatalf("extractLinks: %v", err)
+	}
+	want := []string{
+		"http://example.com/a",
+		"http://example.com/dir/b",
+		"https://x.com/y",
+		"http://other.com/z",
+		"http://example.com/frame",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("extractLinks = %v, want %v", got, want)
+	}
+}
+
+// TestScraperDiscoversLinks seeds one page and verifies the spider enqueues
+// the links it discovers (relative and absolute) while skipping non-http(s)
+// schemes.
+func TestScraperDiscoversLinks(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<html><body>
+			<a href="/page1">1</a>
+			<a href="page2">2</a>
+			<a href nonexistent>ignore</a>
+			<a href="mailto:foo@bar.com">m</a>
+			<a href="#frag">f</a>
+		</body></html>`)
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL + "/")
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, 20*time.Millisecond)
+	scraper.Start()
+	defer scraper.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lk, err := repo.GetLink(seed.ID)
+		if err == nil && lk.LastScrapped.Valid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for seed scrape")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Allow the spider a moment to enqueue discovered links.
+	time.Sleep(50 * time.Millisecond)
+	scraper.Stop()
+
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, l := range links {
+		got[l.URL] = true
+	}
+
+	host := strings.TrimPrefix(server.URL, "http://")
+	for _, want := range []string{
+		host,
+		host + "/page1",
+		host + "/page2",
+	} {
+		if !got[want] {
+			t.Errorf("expected discovered link %q in queue, got %v", want, links)
+		}
 	}
 }
