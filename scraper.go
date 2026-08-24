@@ -32,6 +32,7 @@ func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) 
 
 // Start launches the scraping loop in a background goroutine.
 func (s *Scraper) Start() {
+	log.Printf("scraper started (tick: %s)", s.tick)
 	s.stop = make(chan struct{})
 	go s.run()
 }
@@ -50,6 +51,7 @@ func (s *Scraper) run() {
 	for {
 		select {
 		case <-s.stop:
+			log.Println("scraper stopped")
 			return
 		case <-ticker.C:
 			if err := s.scrapeOnce(); err != nil {
@@ -72,20 +74,26 @@ func (s *Scraper) scrapeOnce() error {
 	var resp *http.Response
 	var getErr error
 	chosenScheme := ""
+	fetchedURL := ""
 	for _, scheme := range []string{"https", "http"} {
-		resp, getErr = s.client.Get(scheme + "://" + link.URL)
+		fetchedURL = scheme + "://" + link.URL
+		resp, getErr = s.client.Get(fetchedURL)
 		if getErr == nil {
 			chosenScheme = scheme
 			break
 		}
 	}
 	if getErr != nil {
+		log.Printf("fetch failed for link id=%d (%s): %v; recording error", link.ID, fetchedURL, getErr)
 		return s.repo.SaveScrapeError(link.ID, getErr.Error())
 	}
 	defer resp.Body.Close()
 
+	log.Printf("scraping link id=%d url=%s", link.ID, fetchedURL)
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("read failed for link id=%d (%s): %v; recording error", link.ID, fetchedURL, err)
 		return s.repo.SaveScrapeError(link.ID, err.Error())
 	}
 
@@ -108,11 +116,20 @@ func (s *Scraper) scrapeOnce() error {
 	if err != nil {
 		return err
 	}
+	added, skipped := 0, 0
 	for _, u := range discovered {
-		if _, err := s.repo.NewLink(u); err != nil && !errors.Is(err, ErrLinkExists) {
+		if _, err := s.repo.NewLink(u); err != nil {
+			if errors.Is(err, ErrLinkExists) {
+				skipped++
+				continue
+			}
 			return err
 		}
+		added++
 	}
+
+	log.Printf("scraped link id=%d: content=%d bytes, readable=%d bytes, discovered=%d (new=%d, skipped=%d)",
+		link.ID, len(content), len(readable), len(discovered), added, skipped)
 
 	return nil
 }
