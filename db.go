@@ -40,11 +40,6 @@ func normalizeURL(raw string) string {
 	return raw
 }
 
-// NewLink builds a LinkQueue with the scheme prefix removed from the URL.
-func NewLink(rawURL string) LinkQueue {
-	return LinkQueue{URL: normalizeURL(rawURL)}
-}
-
 // Mapper scans a row from the link_queue table into a LinkQueue.
 func Mapper(row *sq.Row) LinkQueue {
 	var l LinkQueue

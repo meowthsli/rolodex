@@ -28,7 +28,7 @@ func TestScraper(t *testing.T) {
 	for i := 0; i < total; i++ {
 		paths[i] = "/page" + strconv.Itoa(i)
 		url := server.URL + paths[i]
-		if _, err := repo.AddLink(url); err != nil {
+		if _, err := repo.NewLink(url); err != nil {
 			t.Fatalf("AddLink: %v", err)
 		}
 	}
@@ -119,10 +119,10 @@ func TestScraperRecordsError(t *testing.T) {
 		}),
 	}
 
-	if _, err := repo.AddLink("http://fail.local/broken"); err != nil {
+	if _, err := repo.NewLink("http://fail.local/broken"); err != nil {
 		t.Fatalf("AddLink (bad): %v", err)
 	}
-	if _, err := repo.AddLink(server.URL + "/ok"); err != nil {
+	if _, err := repo.NewLink(server.URL + "/ok"); err != nil {
 		t.Fatalf("AddLink (good): %v", err)
 	}
 

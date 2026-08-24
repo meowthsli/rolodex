@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,8 +34,10 @@ func main() {
 
 	repo := NewLinksRepository(db)
 
-	link, err := repo.AddLink("https://example.com")
-	if err != nil {
+	// NewLink dedupes by normalized URL; an already-existing link is not an
+	// error, we simply skip it.
+	_, err = repo.NewLink("https://example.com")
+	if err != nil && !errors.Is(err, ErrLinkExists) {
 		log.Fatal(err)
 	}
 
@@ -42,7 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	_ = link
 
 	fmt.Printf("link_queue rows: %+v\n", links)
 
@@ -55,4 +57,11 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
+
+	links, err = repo.ListLinks()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("link_queue rows: %+v\n", links)
 }

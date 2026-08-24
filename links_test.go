@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -33,15 +34,15 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestAddLink verifies that a new link can be inserted and that its URL is
-// normalized (scheme stripped) before being persisted.
-func TestAddLink(t *testing.T) {
+// TestNewLink verifies that the constructor inserts a new link and normalizes
+// its URL (scheme stripped) before persisting.
+func TestNewLink(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	link, err := repo.AddLink("https://example.com")
+	link, err := repo.NewLink("https://example.com")
 	if err != nil {
-		t.Fatalf("AddLink: %v", err)
+		t.Fatalf("NewLink: %v", err)
 	}
 
 	if link.ID == 0 {
@@ -60,15 +61,44 @@ func TestAddLink(t *testing.T) {
 	}
 }
 
+// TestNewLinkSkipsDuplicate verifies that constructing a link for a URL that
+// already exists does not create a second row and signals ErrLinkExists.
+func TestNewLinkSkipsDuplicate(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	first, err := repo.NewLink("https://example.com")
+	if err != nil {
+		t.Fatalf("first NewLink: %v", err)
+	}
+
+	// Same host but different scheme/normalized form should hit the duplicate.
+	second, err := repo.NewLink("http://example.com")
+	if !errors.Is(err, ErrLinkExists) {
+		t.Fatalf("expected ErrLinkExists, got %v", err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("duplicate should reference existing link: got id %d want %d", second.ID, first.ID)
+	}
+
+	all, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected exactly 1 link after duplicate, got %d", len(all))
+	}
+}
+
 // TestUpdateLink verifies that an existing link's URL can be changed and that
 // the update is persisted, with the new URL also stored without a scheme.
 func TestUpdateLink(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	added, err := repo.AddLink("https://old.example.com")
+	added, err := repo.NewLink("https://old.example.com")
 	if err != nil {
-		t.Fatalf("AddLink: %v", err)
+		t.Fatalf("NewLink: %v", err)
 	}
 
 	updated, err := repo.UpdateLink(added.ID, "https://new.example.com")
@@ -106,17 +136,5 @@ func TestNormalizeURL(t *testing.T) {
 		if got := normalizeURL(in); got != want {
 			t.Errorf("normalizeURL(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-// TestNewLink checks that the link constructor strips the scheme and leaves
-// all other fields in their zero value.
-func TestNewLink(t *testing.T) {
-	l := NewLink("https://example.com/page")
-	if l.URL != "example.com/page" {
-		t.Errorf("NewLink stripped scheme: got %q want %q", l.URL, "example.com/page")
-	}
-	if l.ID != 0 || l.Content != "" || l.Error.Valid || l.LastScrapped.Valid {
-		t.Errorf("NewLink should only set URL, got %+v", l)
 	}
 }

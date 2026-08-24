@@ -18,10 +18,24 @@ func NewLinksRepository(db *sql.DB) *LinksRepository {
 	return &LinksRepository{db: db}
 }
 
-// AddLink inserts a new row into link_queue and returns the saved link.
-// The URL is stored without its scheme prefix.
-func (r *LinksRepository) AddLink(rawURL string) (LinkQueue, error) {
+// ErrLinkExists is returned by NewLink when a link with the same normalized
+// URL is already present in the queue.
+var ErrLinkExists = errors.New("link already exists")
+
+// NewLink is the link constructor. It normalizes the URL and only inserts a
+// new row when no link with that URL already exists. If the link already
+// exists, it returns the existing row together with ErrLinkExists so the
+// caller knows it can skip this link.
+func (r *LinksRepository) NewLink(rawURL string) (LinkQueue, error) {
 	url := normalizeURL(rawURL)
+
+	existing, err := sq.FetchOne(r.db, sq.SQLite.From(LQ).Where(LQ.URL.Eq(sq.Value(url))), Mapper)
+	if err == nil {
+		return existing, ErrLinkExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return LinkQueue{}, err
+	}
+
 	result, err := sq.Exec(r.db, sq.SQLite.InsertInto(LQ).Columns(LQ.URL).Values(url))
 	if err != nil {
 		return LinkQueue{}, err
