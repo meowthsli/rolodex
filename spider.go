@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-shiori/go-readability"
+	"codeberg.org/readeck/go-readability/v2"
 	"golang.org/x/net/html"
 )
 
@@ -79,5 +79,9 @@ func extractReadable(base *url.URL, htmlBody string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return article.TextContent, nil
+	var buf strings.Builder
+	if err := article.RenderText(&buf); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
