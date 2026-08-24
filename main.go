@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 
-	sq "github.com/bokwoon95/sq"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -27,15 +26,18 @@ func main() {
 	}
 	defer db.Close()
 
-	_, err = sq.Exec(db, sq.SQLite.InsertInto(LQ).Columns(LQ.URL).Values("https://example.com"))
+	repo := NewLinksRepository(db)
+
+	link, err := repo.AddLink("https://example.com")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	links, err := sq.FetchAll(db, sq.SQLite.From(LQ), Mapper)
+	links, err := repo.ListLinks()
 	if err != nil {
 		log.Fatal(err)
 	}
+	_ = link
 
 	fmt.Printf("link_queue rows: %+v\n", links)
 }

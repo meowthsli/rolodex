@@ -11,7 +11,7 @@ type LINK_QUEUE struct {
 	URL sq.StringField
 }
 
-var LQ = sq.New[LINK_QUEUE]("")
+var LQ = sq.New[LINK_QUEUE]("lq")
 
 // LinkQueue is the Go model for a row in link_queue.
 type LinkQueue struct {
