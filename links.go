@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"time"
 
 	sq "github.com/bokwoon95/sq"
 )
@@ -52,4 +54,26 @@ func (r *LinksRepository) GetLink(id int) (LinkQueue, error) {
 // ListLinks returns all rows from link_queue.
 func (r *LinksRepository) ListLinks() ([]LinkQueue, error) {
 	return sq.FetchAll(r.db, sq.SQLite.From(LQ), Mapper)
+}
+
+// GetNextPendingLink returns a single link whose last_scrapped is NULL, or a
+// zero-value LinkQueue if there are no pending links.
+func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
+	link, err := sq.FetchOne(r.db, sq.SQLite.From(LQ).Where(LQ.LastScrapped.IsNull()).Limit(1), Mapper)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return LinkQueue{}, nil
+		}
+		return LinkQueue{}, err
+	}
+	return link, nil
+}
+
+// SaveScrapeResult stores the fetched content and stamps last_scrapped.
+func (r *LinksRepository) SaveScrapeResult(id int, content string) error {
+	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).
+		Set(LQ.Content.Set(content)).
+		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
+		Where(LQ.ID.Eq(sq.Value(id))))
+	return err
 }

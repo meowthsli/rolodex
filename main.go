@@ -4,6 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
@@ -40,4 +45,14 @@ func main() {
 	_ = link
 
 	fmt.Printf("link_queue rows: %+v\n", links)
+
+	scraper := NewScraper(repo, &http.Client{}, 5*time.Second)
+	scraper.Start()
+	defer scraper.Stop()
+
+	fmt.Println("scraper running (tick: 5s); press Ctrl+C to stop")
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
 }
