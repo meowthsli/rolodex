@@ -11,7 +11,7 @@ type LINK_QUEUE struct {
 	sq.TableStruct
 	ID           sq.NumberField
 	URL          sq.StringField
-	Content      sq.StringField `sq:"content"`
+	Content      sq.BinaryField `sq:"content"`
 	ReadableText sq.StringField `sq:"readable_text"`
 	LastScrapped sq.TimeField   `sq:"last_scrapped"`
 	Error        sq.StringField `sq:"error"`
@@ -34,7 +34,7 @@ func Mapper(row *sq.Row) LinkQueue {
 	var l LinkQueue
 	l.ID = row.IntField(LQ.ID)
 	l.URL = row.StringField(LQ.URL)
-	l.Content = row.StringField(LQ.Content)
+	l.Content = unpackZip(row.BytesField(LQ.Content))
 	l.ReadableText = row.StringField(LQ.ReadableText)
 	l.LastScrapped = row.NullTimeField(LQ.LastScrapped)
 	l.Error = row.NullStringField(LQ.Error)

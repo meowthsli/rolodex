@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS link_queue (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	url TEXT NOT NULL,
-	content TEXT,
+	content BLOB,
 	readable_text TEXT,
 	last_scrapped DATETIME,
 	error TEXT

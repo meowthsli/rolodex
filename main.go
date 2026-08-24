@@ -50,7 +50,7 @@ func main() {
 
 	// NewLink dedupes by normalized URL; an already-existing link is not an
 	// error, we simply skip it.
-	_, err = repo.NewLink("https://localhost")
+	_, err = repo.NewLink("https://habr.com/ru/articles/1071836/")
 	if err != nil && !errors.Is(err, ErrLinkExists) {
 		log.Fatal(err)
 	}

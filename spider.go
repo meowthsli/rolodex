@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"codeberg.org/readeck/go-readability/v2"
+	"github.com/gelembjuk/articletext"
 	"golang.org/x/net/html"
 )
 
@@ -73,15 +73,7 @@ func resolveLink(base *url.URL, raw string) (string, error) {
 }
 
 // extractReadable returns the main readable text content of an HTML page using
-// the go-readability library, resolved against the page's base URL.
-func extractReadable(base *url.URL, htmlBody string) (string, error) {
-	article, err := readability.FromReader(strings.NewReader(htmlBody), base)
-	if err != nil {
-		return "", err
-	}
-	var buf strings.Builder
-	if err := article.RenderText(&buf); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+// the articletext library.
+func extractReadable(_ *url.URL, htmlBody string) (string, error) {
+	return articletext.GetArticleText(strings.NewReader(htmlBody))
 }

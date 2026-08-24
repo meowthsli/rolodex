@@ -87,11 +87,15 @@ func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
 	return link, nil
 }
 
-// SaveScrapeResult stores the fetched content (and its extracted readable
-// text) and stamps last_scrapped, clearing any previous error.
+// SaveScrapeResult stores the fetched content (zipped) and its extracted
+// readable text, and stamps last_scrapped, clearing any previous error.
 func (r *LinksRepository) SaveScrapeResult(id int, content, readableText string) error {
-	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).
-		Set(LQ.Content.Set(content)).
+	zipped, err := packZip(content)
+	if err != nil {
+		return err
+	}
+	_, err = sq.Exec(r.db, sq.SQLite.Update(LQ).
+		Set(LQ.Content.Set(zipped)).
 		Set(LQ.ReadableText.Set(readableText)).
 		Set(LQ.Error.Set(sq.Expr("NULL"))).
 		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
