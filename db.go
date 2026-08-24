@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"strings"
 
 	sq "github.com/bokwoon95/sq"
 )
@@ -26,18 +25,6 @@ type LinkQueue struct {
 	Content      string
 	LastScrapped sql.NullTime
 	Error        sql.NullString
-}
-
-// normalizeURL strips a leading http:// or https:// scheme prefix.
-func normalizeURL(raw string) string {
-	lower := strings.ToLower(raw)
-	switch {
-	case strings.HasPrefix(lower, "https://"):
-		return raw[len("https://"):]
-	case strings.HasPrefix(lower, "http://"):
-		return raw[len("http://"):]
-	}
-	return raw
 }
 
 // Mapper scans a row from the link_queue table into a LinkQueue.

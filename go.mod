@@ -7,3 +7,9 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/mattn/go-sqlite3 v1.14.50
 )
+
+require (
+	github.com/PuerkitoBio/purell v1.2.2 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
+)

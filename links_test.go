@@ -81,12 +81,26 @@ func TestNewLinkSkipsDuplicate(t *testing.T) {
 		t.Errorf("duplicate should reference existing link: got id %d want %d", second.ID, first.ID)
 	}
 
+	// Same URL but with query parameters in a different order must also be
+	// treated as the same (already existing) link.
+	third, err := repo.NewLink("https://example.com?b=2&a=1")
+	if err != nil {
+		t.Fatalf("third NewLink: %v", err)
+	}
+	fourth, err := repo.NewLink("https://example.com?a=1&b=2")
+	if !errors.Is(err, ErrLinkExists) {
+		t.Fatalf("expected ErrLinkExists for reordered query, got %v", err)
+	}
+	if fourth.ID != third.ID {
+		t.Errorf("reordered query should reference existing link: got id %d want %d", fourth.ID, third.ID)
+	}
+
 	all, err := repo.ListLinks()
 	if err != nil {
 		t.Fatalf("ListLinks: %v", err)
 	}
-	if len(all) != 1 {
-		t.Errorf("expected exactly 1 link after duplicate, got %d", len(all))
+	if len(all) != 2 {
+		t.Errorf("expected exactly 2 links after duplicates, got %d", len(all))
 	}
 }
 
@@ -119,22 +133,5 @@ func TestUpdateLink(t *testing.T) {
 	}
 	if got.URL != "new.example.com" {
 		t.Errorf("update not persisted: got %q", got.URL)
-	}
-}
-
-// TestNormalizeURL checks that normalizeURL strips http/https prefixes across
-// various casings and leaves scheme-less URLs untouched.
-func TestNormalizeURL(t *testing.T) {
-	cases := map[string]string{
-		"https://example.com": "example.com",
-		"http://example.com":  "example.com",
-		"HTTPS://Example.com": "Example.com",
-		"example.com":         "example.com",
-		"https://example.com/path?q=1": "example.com/path?q=1",
-	}
-	for in, want := range cases {
-		if got := normalizeURL(in); got != want {
-			t.Errorf("normalizeURL(%q) = %q, want %q", in, got, want)
-		}
 	}
 }
