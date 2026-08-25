@@ -104,6 +104,56 @@ func TestNewLinkSkipsDuplicate(t *testing.T) {
 	}
 }
 
+// TestGetNextPendingLinkRequeuesStaleContent verifies that GetNextPendingLink
+// returns a link not only when it has never been scraped, but also when its
+// stored content (last_scrapped_at) is older than the moment the link was
+// (re)added (added_at). A link scraped in the past and rediscovered later
+// should be picked up again for a refresh.
+func TestGetNextPendingLinkRequeuesStaleContent(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	// Fresh link: not yet scraped, so it is pending.
+	link, err := repo.NewLink("https://stale.example.com")
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+	pending, err := repo.GetNextPendingLink()
+	if err != nil {
+		t.Fatalf("GetNextPendingLink: %v", err)
+	}
+	if pending.ID != link.ID {
+		t.Fatalf("expected fresh link to be pending, got id %d", pending.ID)
+	}
+
+	// Scrape it, recording a content timestamp in the past.
+	if err := repo.SaveScrapeResult(link.ID, "<html></html>", "readable"); err != nil {
+		t.Fatalf("SaveScrapeResult: %v", err)
+	}
+
+	// After scraping, the link should no longer be pending.
+	pending, err = repo.GetNextPendingLink()
+	if err != nil {
+		t.Fatalf("GetNextPendingLink: %v", err)
+	}
+	if pending.ID != 0 {
+		t.Fatalf("expected no pending link after scrape, got id %d", pending.ID)
+	}
+
+	// Rediscover the same URL: NewLink bumps added_at to now, which is later
+	// than the stored content, so the link becomes pending again.
+	if _, err := repo.NewLink("https://stale.example.com"); !errors.Is(err, ErrLinkExists) {
+		t.Fatalf("expected ErrLinkExists on rediscovery, got %v", err)
+	}
+	pending, err = repo.GetNextPendingLink()
+	if err != nil {
+		t.Fatalf("GetNextPendingLink: %v", err)
+	}
+	if pending.ID != link.ID {
+		t.Fatalf("expected rediscovered link to be pending again, got id %d", pending.ID)
+	}
+}
+
 // TestUpdateLink verifies that an existing link's URL can be changed and that
 // the update is persisted, with the new URL also stored without a scheme.
 func TestUpdateLink(t *testing.T) {

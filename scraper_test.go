@@ -46,7 +46,7 @@ func TestScraper(t *testing.T) {
 		}
 		pending := 0
 		for _, l := range links {
-			if !l.LastScrapped.Valid {
+			if !l.LastScrappedAt.Valid {
 				pending++
 			}
 		}
@@ -68,7 +68,7 @@ func TestScraper(t *testing.T) {
 	}
 
 	for i, l := range links {
-		if !l.LastScrapped.Valid {
+		if !l.LastScrappedAt.Valid {
 			t.Errorf("link %d was not scraped", l.ID)
 		}
 		want := "content for " + paths[i]
@@ -139,7 +139,7 @@ func TestScraperRecordsError(t *testing.T) {
 		}
 		pending := 0
 		for _, l := range links {
-			if !l.LastScrapped.Valid {
+			if !l.LastScrappedAt.Valid {
 				pending++
 			}
 		}
@@ -175,7 +175,7 @@ func TestScraperRecordsError(t *testing.T) {
 	if !strings.Contains(bad.Error.String, "boom") {
 		t.Errorf("expected error message to contain boom, got %q", bad.Error.String)
 	}
-	if !bad.LastScrapped.Valid {
+	if !bad.LastScrappedAt.Valid {
 		t.Errorf("expected bad link last_scrapped to be stamped")
 	}
 	if bad.Content != "" {
@@ -220,7 +220,7 @@ func TestScraperSavesReadableText(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		lk, err := repo.GetLink(seed.ID)
-		if err == nil && lk.LastScrapped.Valid {
+		if err == nil && lk.LastScrappedAt.Valid {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -304,7 +304,7 @@ func TestScraperDiscoversLinks(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		lk, err := repo.GetLink(seed.ID)
-		if err == nil && lk.LastScrapped.Valid {
+		if err == nil && lk.LastScrappedAt.Valid {
 			break
 		}
 		if time.Now().After(deadline) {

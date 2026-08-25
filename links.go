@@ -24,19 +24,30 @@ var ErrLinkExists = errors.New("link already exists")
 
 // NewLink is the link constructor. It normalizes the URL and only inserts a
 // new row when no link with that URL already exists. If the link already
-// exists, it returns the existing row together with ErrLinkExists so the
-// caller knows it can skip this link.
+// exists, it re-queues it by stamping added_at with the current time (so the
+// scraper re-fetches it if the stored content predates this rediscovery) and
+// returns the existing row together with ErrLinkExists so the caller knows it
+// can skip inserting a duplicate row.
 func (r *LinksRepository) NewLink(rawURL string) (LinkQueue, error) {
 	url := normalizeURL(rawURL)
 
 	existing, err := sq.FetchOne(r.db, sq.SQLite.From(LQ).Where(LQ.URL.Eq(sq.Value(url))), Mapper)
 	if err == nil {
+		// Rediscovery: bump added_at so the scraper re-fetches this link if
+		// its stored content is older than when we found it again.
+		_, uerr := sq.Exec(r.db, sq.SQLite.Update(LQ).
+			Set(LQ.AddedAt.Set(sq.Value(time.Now()))).
+			Where(LQ.ID.Eq(sq.Value(existing.ID))))
+		if uerr != nil {
+			return LinkQueue{}, uerr
+		}
 		return existing, ErrLinkExists
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return LinkQueue{}, err
 	}
 
-	result, err := sq.Exec(r.db, sq.SQLite.InsertInto(LQ).Columns(LQ.URL).Values(url))
+	result, err := sq.Exec(r.db, sq.SQLite.InsertInto(LQ).
+		Columns(LQ.URL, LQ.AddedAt).Values(url, sq.Value(time.Now())))
 	if err != nil {
 		return LinkQueue{}, err
 	}
@@ -74,10 +85,15 @@ func (r *LinksRepository) ListLinks() ([]LinkQueue, error) {
 	return sq.FetchAll(r.db, sq.SQLite.From(LQ), Mapper)
 }
 
-// GetNextPendingLink returns a single link whose last_scrapped is NULL, or a
-// zero-value LinkQueue if there are no pending links.
+// GetNextPendingLink returns a single link that still needs scraping, or a
+// zero-value LinkQueue if there are no pending links. A link is pending when
+// it has never been scraped (last_scrapped_at IS NULL) or when its stored
+// content is older than the moment the link was added/re-queued
+// (last_scrapped_at < added_at), indicating the content should be refreshed.
 func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
-	link, err := sq.FetchOne(r.db, sq.SQLite.From(LQ).Where(LQ.LastScrapped.IsNull()).Limit(1), Mapper)
+	link, err := sq.FetchOne(r.db, sq.SQLite.From(LQ).
+		Where(sq.Or(LQ.LastScrappedAt.IsNull(), sq.Lt(LQ.LastScrappedAt, LQ.AddedAt))).
+		Limit(1), Mapper)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return LinkQueue{}, nil
@@ -88,7 +104,7 @@ func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
 }
 
 // SaveScrapeResult stores the fetched content (zipped) and its extracted
-// readable text, and stamps last_scrapped, clearing any previous error.
+// readable text, and stamps last_scrapped_at, clearing any previous error.
 func (r *LinksRepository) SaveScrapeResult(id int, content, readableText string) error {
 	zipped, err := packZip(content)
 	if err != nil {
@@ -98,17 +114,17 @@ func (r *LinksRepository) SaveScrapeResult(id int, content, readableText string)
 		Set(LQ.Content.Set(zipped)).
 		Set(LQ.ReadableText.Set(readableText)).
 		Set(LQ.Error.Set(sq.Expr("NULL"))).
-		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
+		Set(LQ.LastScrappedAt.Set(sq.Value(time.Now()))).
 		Where(LQ.ID.Eq(sq.Value(id))))
 	return err
 }
 
 // SaveScrapeError records a failure for the given link and stamps
-// last_scrapped so the link is not retried.
+// last_scrapped_at so the link is not retried.
 func (r *LinksRepository) SaveScrapeError(id int, errMsg string) error {
 	_, err := sq.Exec(r.db, sq.SQLite.Update(LQ).
 		Set(LQ.Error.Set(errMsg)).
-		Set(LQ.LastScrapped.Set(sq.Value(time.Now()))).
+		Set(LQ.LastScrappedAt.Set(sq.Value(time.Now()))).
 		Where(LQ.ID.Eq(sq.Value(id))))
 	return err
 }
