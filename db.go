@@ -34,12 +34,12 @@ type LinkQueue struct {
 // Mapper scans a row from the link_queue table into a LinkQueue.
 func Mapper(row *sq.Row) LinkQueue {
 	var l LinkQueue
-	l.ID = row.IntField(LQ.ID)
-	l.URL = row.StringField(LQ.URL)
-	l.Content = unpackZip(row.BytesField(LQ.Content))
-	l.ReadableText = row.StringField(LQ.ReadableText)
-	l.LastScrappedAt = row.NullTimeField(LQ.LastScrappedAt)
-	l.AddedAt = row.NullTimeField(LQ.AddedAt)
-	l.Error = row.NullStringField(LQ.Error)
+	l.ID = row.Int("id")
+	l.URL = row.String("url")
+	l.Content = unpackZip(row.Bytes("content"))
+	l.ReadableText = row.String("readable_text")
+	l.LastScrappedAt = row.NullTime("last_scrapped_at")
+	l.AddedAt = row.NullTime("added_at")
+	l.Error = row.NullString("error")
 	return l
 }
