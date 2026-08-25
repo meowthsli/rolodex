@@ -18,7 +18,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
 
-	dbstore "meo.ru/rolodex/db"
 	grab "meo.ru/rolodex/grab"
 )
 
@@ -49,12 +48,12 @@ func main() {
 		logger.SqLogQuery(ctx, queryStats)
 	})
 
-	repo := dbstore.NewLinksRepository(db)
+	repo := grab.NewLinksRepository(db)
 
 	// NewLink dedupes by normalized URL; an already-existing link is not an
 	// error, we simply skip it.
 	_, err = repo.NewLink("https://github.com/Gelembjuk/articletext")
-	if err != nil && !errors.Is(err, dbstore.ErrLinkExists) {
+	if err != nil && !errors.Is(err, grab.ErrLinkExists) {
 		log.Fatal(err)
 	}
 

@@ -1,46 +1,15 @@
 package grab
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/mattn/go-sqlite3"
-
-	dbstore "meo.ru/rolodex/db"
 )
-
-func setupTestDB(t *testing.T) *dbstore.LinksRepository {
-	t.Helper()
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	m, err := migrate.New("file://../migrations", "sqlite3://"+dbPath)
-	if err != nil {
-		t.Fatalf("migrate new: %v", err)
-	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		t.Fatalf("migrate up: %v", err)
-	}
-
-	dbh, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { dbh.Close() })
-
-	return dbstore.NewLinksRepository(dbh)
-}
 
 // TestScraper seeds 5 links and runs the scraper with a fast tick. It asserts
 // that every link ends up scraped: content captured and last_scrapped stamped.
@@ -48,7 +17,7 @@ func setupTestDB(t *testing.T) *dbstore.LinksRepository {
 // plain HTTP.
 func TestScraper(t *testing.T) {
 	db := setupTestDB(t)
-	repo := db
+	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "content for %s", r.URL.Path)
@@ -113,7 +82,7 @@ func TestScraper(t *testing.T) {
 // (no error and no rows touched).
 func TestScraperNoPendingLinks(t *testing.T) {
 	db := setupTestDB(t)
-	repo := db
+	repo := NewLinksRepository(db)
 
 	scraper := NewScraper(repo, &http.Client{}, time.Hour)
 	if err := scraper.scrapeOnce(); err != nil {
@@ -133,7 +102,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // content, while the healthy link is scraped normally with no error.
 func TestScraperRecordsError(t *testing.T) {
 	db := setupTestDB(t)
-	repo := db
+	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "content for %s", r.URL.Path)
@@ -188,7 +157,7 @@ func TestScraperRecordsError(t *testing.T) {
 		t.Fatalf("ListLinks: %v", err)
 	}
 
-	var bad, good dbstore.LinkQueue
+	var bad, good LinkQueue
 	for _, l := range links {
 		if l.URL == "fail.local/broken" {
 			bad = l
@@ -228,7 +197,7 @@ func TestScraperRecordsError(t *testing.T) {
 // the scraper stores the readable text extracted by go-readability.
 func TestScraperSavesReadableText(t *testing.T) {
 	db := setupTestDB(t)
-	repo := db
+	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<html><head><title>T</title></head><body>
@@ -310,7 +279,7 @@ func TestExtractLinks(t *testing.T) {
 // schemes.
 func TestScraperDiscoversLinks(t *testing.T) {
 	db := setupTestDB(t)
-	repo := db
+	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<html><body>
