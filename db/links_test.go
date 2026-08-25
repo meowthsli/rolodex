@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"database/sql"
@@ -17,7 +17,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	m, err := migrate.New("file://migrations", "sqlite3://"+dbPath)
+	m, err := migrate.New("file://../migrations", "sqlite3://"+dbPath)
 	if err != nil {
 		t.Fatalf("migrate new: %v", err)
 	}

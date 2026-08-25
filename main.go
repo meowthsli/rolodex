@@ -17,6 +17,9 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
+
+	dbstore "meo.ru/rolodex/db"
+	grab "meo.ru/rolodex/grab"
 )
 
 func main() {
@@ -46,12 +49,12 @@ func main() {
 		logger.SqLogQuery(ctx, queryStats)
 	})
 
-	repo := NewLinksRepository(db)
+	repo := dbstore.NewLinksRepository(db)
 
 	// NewLink dedupes by normalized URL; an already-existing link is not an
 	// error, we simply skip it.
 	_, err = repo.NewLink("https://github.com/Gelembjuk/articletext")
-	if err != nil && !errors.Is(err, ErrLinkExists) {
+	if err != nil && !errors.Is(err, dbstore.ErrLinkExists) {
 		log.Fatal(err)
 	}
 
@@ -62,7 +65,7 @@ func main() {
 
 	fmt.Printf("link_queue rows: %+v\n", links)
 
-	scraper := NewScraper(repo, &http.Client{}, 1*time.Second)
+	scraper := grab.NewScraper(repo, &http.Client{}, 1*time.Second)
 	scraper.Start()
 	defer scraper.Stop()
 

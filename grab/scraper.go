@@ -1,4 +1,4 @@
-package main
+package grab
 
 import (
 	"errors"
@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	db "meo.ru/rolodex/db"
 )
 
 // Scraper periodically fetches the next unscraped link, retrieves its content
 // over HTTP and records the result back into the repository.
 type Scraper struct {
-	repo   *LinksRepository
+	repo   *db.LinksRepository
 	client *http.Client
 	tick   time.Duration
 	stop   chan struct{}
@@ -20,7 +22,7 @@ type Scraper struct {
 
 // NewScraper builds a Scraper. A nil client defaults to http.DefaultClient,
 // and a non-positive tick defaults to 5 seconds.
-func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) *Scraper {
+func NewScraper(repo *db.LinksRepository, client *http.Client, tick time.Duration) *Scraper {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -119,7 +121,7 @@ func (s *Scraper) scrapeOnce() error {
 	added, skipped := 0, 0
 	for _, u := range discovered {
 		if _, err := s.repo.NewLink(u); err != nil {
-			if errors.Is(err, ErrLinkExists) {
+			if errors.Is(err, db.ErrLinkExists) {
 				skipped++
 				continue
 			}

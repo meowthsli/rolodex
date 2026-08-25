@@ -1,4 +1,4 @@
-package main
+package grab
 
 import (
 	"net/url"
