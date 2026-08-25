@@ -85,7 +85,7 @@ func main() {
 	// (last_scrapped_at set) but has no pass yet, runs its readable text through
 	// the analyzer, and stores the result as a pass. Uses a mock analyzer until
 	// a real one is wired in.
-	fm := facts.NewFactsMachine(db, facts.MockAnalyzer{Result: `{"mock":true}`}, 5*time.Second)
+	fm := facts.NewFactsMachine(db, facts.MockAnalyzer{Result: `{"mock":true}`}, 1*time.Second)
 	fm.Start()
 	defer fm.Stop()
 

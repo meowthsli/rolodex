@@ -3,8 +3,11 @@ package facts
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"time"
+
+	sq "github.com/bokwoon95/sq"
 )
 
 // Analyzer turns a single link's readable text into a structured analysis
@@ -79,24 +82,35 @@ func (m *FactsMachine) run() {
 	}
 }
 
+// linkContent is the minimal projection nextUnprocessedLink reads from
+// link_queue: just the id and the readable text to analyze.
+type linkContent struct {
+	ID       int
+	Readable string
+}
+
 // nextUnprocessedLink returns the id and readable text of a link that has been
 // scraped (last_scrapped_at set) but has no pass yet. found is false when
 // nothing is left to analyze.
 func (m *FactsMachine) nextUnprocessedLink(ctx context.Context) (id int, readable string, found bool, err error) {
-	row := m.db.QueryRowContext(ctx,
-		"SELECT lq.id, lq.readable_text FROM link_queue lq "+
+	lc, err := sq.FetchOneContext(ctx, m.db, sq.SQLite.Queryf(
+		"SELECT lq.id AS \"lq.link_id\", lq.readable_text AS \"lq.readable_text\" FROM link_queue lq "+
 			"LEFT JOIN passes p ON p.link_queue_id = lq.id "+
 			"WHERE lq.last_scrapped_at IS NOT NULL AND p.id IS NULL "+
-			"LIMIT 1")
-	var rid int
-	var rtext string
-	if serr := row.Scan(&rid, &rtext); serr != nil {
-		if serr == sql.ErrNoRows {
+			"LIMIT 1"),
+		func(row *sq.Row) linkContent {
+			return linkContent{
+				ID:       row.Int("lq.link_id"),
+				Readable: row.String("lq.readable_text"),
+			}
+		})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return 0, "", false, nil
 		}
-		return 0, "", false, serr
+		return 0, "", false, err
 	}
-	return rid, rtext, true, nil
+	return lc.ID, lc.Readable, true, nil
 }
 
 // ProcessOnce analyzes a single unprocessed link and stores the result. It is a
