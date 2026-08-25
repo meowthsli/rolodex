@@ -156,3 +156,31 @@ func TestUpdateLink(t *testing.T) {
 		t.Errorf("update not persisted: got %q", got.URL)
 	}
 }
+
+// TestSaveScrapeResultRejectsEmptyReadable verifies that a scrape yielding no
+// readable text is rejected with ErrEmptyReadable and the link is left
+// un-scraped (last_scrapped_at still NULL), so it stays pending for retry
+// rather than being picked up by the analysis pipeline without content.
+func TestSaveScrapeResultRejectsEmptyReadable(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	link, err := repo.NewLink("https://empty.example.com")
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	err = repo.SaveScrapeResult(link.ID, "<html></html>", "")
+	if !errors.Is(err, ErrEmptyReadable) {
+		t.Fatalf("expected ErrEmptyReadable, got %v", err)
+	}
+
+	// The link must remain pending (not marked scraped) after the rejection.
+	pending, err := repo.GetNextPendingLink()
+	if err != nil {
+		t.Fatalf("GetNextPendingLink: %v", err)
+	}
+	if pending.ID != link.ID {
+		t.Fatalf("expected link to stay pending, got pending id %d", pending.ID)
+	}
+}

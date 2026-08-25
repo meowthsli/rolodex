@@ -3,6 +3,7 @@ package grab
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	sq "github.com/bokwoon95/sq"
@@ -144,9 +145,20 @@ func (r *LinksRepository) GetNextPendingLink() (LinkQueue, error) {
 	return link, nil
 }
 
+// ErrEmptyReadable is returned by SaveScrapeResult when the extracted readable
+// text is empty, guaranteeing a link is never marked as scraped (last_scrapped_at
+// set) without having content to analyze.
+var ErrEmptyReadable = errors.New("readable_text must not be empty")
+
 // SaveScrapeResult stores the fetched content (zipped) and its extracted
 // readable text, and stamps last_scrapped_at, clearing any previous error.
+// It refuses to record a result with empty readable_text: such a row would be
+// picked up by the analysis pipeline (which keys off last_scrapped_at) yet have
+// nothing to analyze, so we leave the link un-scraped for retry instead.
 func (r *LinksRepository) SaveScrapeResult(id int, content, readableText string) error {
+	if readableText == "" {
+		return fmt.Errorf("link %d: %w", id, ErrEmptyReadable)
+	}
 	zipped, err := packZip(content)
 	if err != nil {
 		return err
