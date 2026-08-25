@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -52,10 +51,10 @@ func main() {
 
 	// NewLink dedupes by normalized URL; an already-existing link is not an
 	// error, we simply skip it.
-	_, err = repo.NewLink("https://github.com/Gelembjuk/articletext")
-	if err != nil && !errors.Is(err, grab.ErrLinkExists) {
-		log.Fatal(err)
-	}
+	//_, err = repo.NewLink("https://github.com/Gelembjuk/articletext")
+	//if err != nil && !errors.Is(err, grab.ErrLinkExists) {
+	//	log.Fatal(err)
+	//}
 
 	links, err := repo.ListLinks()
 	if err != nil {
