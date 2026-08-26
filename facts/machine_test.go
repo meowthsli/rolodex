@@ -41,7 +41,7 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 		t.Fatalf("process once: %v", err)
 	}
 
-	pass, err := repo.GetPassByLink(linkID, "facts")
+	pass, err := repo.GetPassByLink(linkID, "facts", 0)
 	if err != nil {
 		t.Fatalf("get pass: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestProcessOnceSkipsNotScrapedLink(t *testing.T) {
 		t.Fatalf("process once: %v", err)
 	}
 
-	_, err := NewPassesRepository(db).GetPassByLink(linkID, "facts")
+	_, err := NewPassesRepository(db).GetPassByLink(linkID, "facts", 0)
 	if err != sql.ErrNoRows {
 		t.Errorf("expected no pass for unscraped link, got %v", err)
 	}

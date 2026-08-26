@@ -19,11 +19,15 @@ CREATE TABLE IF NOT EXISTS passes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     link_queue_id INTEGER NOT NULL REFERENCES link_queue(id) ON DELETE CASCADE,
     domain        TEXT    NOT NULL DEFAULT '',
+    chunk_index   INTEGER NOT NULL DEFAULT 0,
+    chunk_start   INTEGER NOT NULL DEFAULT 0,
+    chunk_end     INTEGER NOT NULL DEFAULT 0,
+    chunk_text    TEXT,
     content_hash  TEXT    NOT NULL,
     result        TEXT    NOT NULL,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     error         TEXT,
-    UNIQUE(link_queue_id, domain)
+    UNIQUE(link_queue_id, domain, chunk_index)
 );
 
 

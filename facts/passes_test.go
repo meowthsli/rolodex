@@ -12,7 +12,7 @@ func TestUpsertPassStoresResultAndHash(t *testing.T) {
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	got, err := repo.UpsertPass(linkID, "facts", HashContent("readable"), `{"entities":[]}`)
+	got, err := repo.UpsertPass(linkID, "facts", 0, 0, 0, "", HashContent("readable"), `{"entities":[]}`)
 	if err != nil {
 		t.Fatalf("upsert pass: %v", err)
 	}
@@ -27,19 +27,19 @@ func TestUpsertPassStoresResultAndHash(t *testing.T) {
 	}
 }
 
-// TestUpsertPassOverwritesSameLink verifies the one-pass-per-(link, domain)
-// contract: re-running a pass for the same link and domain updates the row in
+// TestUpsertPassOverwritesSameLink verifies the one-pass-per-(link, domain,
+// chunk) contract: re-running a pass for the same triple updates the row in
 // place (same id, new result) instead of inserting a second row.
 func TestUpsertPassOverwritesSameLink(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	first, err := repo.UpsertPass(linkID, "facts", "hash1", "result1")
+	first, err := repo.UpsertPass(linkID, "facts", 0, 0, 0, "", "hash1", "result1")
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	second, err := repo.UpsertPass(linkID, "facts", "hash2", "result2")
+	second, err := repo.UpsertPass(linkID, "facts", 0, 0, 0, "", "hash2", "result2")
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestUpsertPassOverwritesSameLink(t *testing.T) {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("expected exactly 1 pass per (link, domain), got %d", n)
+		t.Errorf("expected exactly 1 pass per (link, domain, chunk), got %d", n)
 	}
 }
 
@@ -66,21 +66,21 @@ func TestUpsertPassSeparatesDomains(t *testing.T) {
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	if _, err := repo.UpsertPass(linkID, "facts", "hash", "facts-result"); err != nil {
+	if _, err := repo.UpsertPass(linkID, "facts", 0, 0, 0, "", "hash", "facts-result"); err != nil {
 		t.Fatalf("upsert facts: %v", err)
 	}
-	if _, err := repo.UpsertPass(linkID, "entities", "hash", "entities-result"); err != nil {
+	if _, err := repo.UpsertPass(linkID, "entities", 0, 0, 0, "", "hash", "entities-result"); err != nil {
 		t.Fatalf("upsert entities: %v", err)
 	}
 
-	factsPass, err := repo.GetPassByLink(linkID, "facts")
+	factsPass, err := repo.GetPassByLink(linkID, "facts", 0)
 	if err != nil {
 		t.Fatalf("get facts pass: %v", err)
 	}
 	if factsPass.Result != "facts-result" {
 		t.Errorf("facts result = %q", factsPass.Result)
 	}
-	entitiesPass, err := repo.GetPassByLink(linkID, "entities")
+	entitiesPass, err := repo.GetPassByLink(linkID, "entities", 0)
 	if err != nil {
 		t.Fatalf("get entities pass: %v", err)
 	}
@@ -97,6 +97,35 @@ func TestUpsertPassSeparatesDomains(t *testing.T) {
 	}
 }
 
+// TestUpsertPassSeparatesChunks verifies that distinct chunks of the same
+// link/domain are stored as separate rows (one per chunk_index).
+func TestUpsertPassSeparatesChunks(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewPassesRepository(db)
+	linkID := insertLink(t, db)
+
+	if _, err := repo.UpsertPass(linkID, "facts", 0, 0, 10, "", "h", "chunk0"); err != nil {
+		t.Fatalf("upsert chunk0: %v", err)
+	}
+	if _, err := repo.UpsertPass(linkID, "facts", 1, 10, 20, "", "h", "chunk1"); err != nil {
+		t.Fatalf("upsert chunk1: %v", err)
+	}
+
+	all, err := repo.ListPassesByLink(linkID, "facts")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 chunk passes, got %d", len(all))
+	}
+	if all[0].ChunkIndex != 0 || all[0].Result != "chunk0" {
+		t.Errorf("chunk0 = %+v", all[0])
+	}
+	if all[1].ChunkIndex != 1 || all[1].ChunkStart != 10 || all[1].ChunkEnd != 20 {
+		t.Errorf("chunk1 = %+v", all[1])
+	}
+}
+
 // TestGetPassByLinkNotFound verifies a link with no analysis yet yields
 // sql.ErrNoRows so callers can tell "not analyzed" apart from "failed".
 func TestGetPassByLinkNotFound(t *testing.T) {
@@ -104,7 +133,7 @@ func TestGetPassByLinkNotFound(t *testing.T) {
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	_, err := repo.GetPassByLink(linkID, "facts")
+	_, err := repo.GetPassByLink(linkID, "facts", 0)
 	if err != sql.ErrNoRows {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
@@ -117,10 +146,10 @@ func TestSetPassErrorRecordsFailure(t *testing.T) {
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	if err := repo.SetPassError(linkID, "facts", "boom"); err != nil {
+	if err := repo.SetPassError(linkID, "facts", 0, 0, 0, "", "boom"); err != nil {
 		t.Fatalf("set pass error: %v", err)
 	}
-	got, err := repo.GetPassByLink(linkID, "facts")
+	got, err := repo.GetPassByLink(linkID, "facts", 0)
 	if err != nil {
 		t.Fatalf("get pass: %v", err)
 	}

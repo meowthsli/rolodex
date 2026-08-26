@@ -42,18 +42,20 @@ type FactsMachine struct {
 	db       *sql.DB
 	analyzer Analyzer
 	domain   string
+	Chunker  *TextChunker
 	passes   *PassesRepository
 	tick     time.Duration
 	stop     chan struct{}
 }
 
 // NewFactsMachine builds a FactsMachine for the given domain. A non-positive
-// tick defaults to 5s.
+// tick defaults to 5s. The Chunker defaults to sentence/paragraph-aware
+// splitting with the package's default size and overlap.
 func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration, domain string) *FactsMachine {
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
-	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, passes: NewPassesRepository(db), tick: tick}
+	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, Chunker: NewTextChunker(), passes: NewPassesRepository(db), tick: tick}
 }
 
 // Start launches the analysis loop in a background goroutine.
@@ -129,18 +131,29 @@ func (m *FactsMachine) ProcessOnce(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("analyzing link id=%d (%d chars)", id, len(readable))
+	log.Printf("analyzing link id=%d (%d chars)", id, len([]rune(readable)))
 
-	result, aerr := m.analyzer.Analyze(ctx, readable)
-	if aerr != nil {
-		log.Printf("analysis failed for link id=%d: %v; recording error", id, aerr)
-		return m.passes.SetPassError(id, m.domain, aerr.Error())
-	}
-
-	if _, err := m.passes.UpsertPass(id, m.domain, HashContent(readable), result); err != nil {
+	// Drop any previous chunk passes for this link/domain so a re-run fully
+	// replaces them (the chunk count can change as the source grows/shrinks).
+	if err := m.passes.DeletePassesByLinkDomain(id, m.domain); err != nil {
 		return err
 	}
 
-	log.Printf("analyzed link id=%d: result=%d bytes", id, len(result))
+	chunks := m.Chunker.Chunk(readable)
+	for _, ch := range chunks {
+		result, aerr := m.analyzer.Analyze(ctx, ch.Text)
+		if aerr != nil {
+			log.Printf("analysis failed for link id=%d chunk %d: %v; recording error", id, ch.Index, aerr)
+			if err := m.passes.SetPassError(id, m.domain, ch.Index, ch.Start, ch.End, ch.Text, aerr.Error()); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := m.passes.UpsertPass(id, m.domain, ch.Index, ch.Start, ch.End, ch.Text, HashContent(ch.Text), result); err != nil {
+			return err
+		}
+	}
+
+	log.Printf("analyzed link id=%d: %d chunks", id, len(chunks))
 	return nil
 }

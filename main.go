@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -132,6 +133,17 @@ func main() {
 		log.Fatal("llm_api_url and llm_api_key must be set (in .env or environment)")
 	}
 	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts")
+
+	if v := os.Getenv("llm_chunk_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			fm.Chunker.MaxRunes = n
+		}
+	}
+	if v := os.Getenv("llm_chunk_overlap"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			fm.Chunker.OverlapRunes = n
+		}
+	}
 	fm.Start()
 	defer fm.Stop()
 
