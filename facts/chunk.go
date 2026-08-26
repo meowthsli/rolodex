@@ -31,11 +31,12 @@ type chunkUnit struct {
 	end   int
 }
 
-// Chunk splits text into overlapping chunks. Units (paragraph -> sentence ->
-// hard rune block) are accumulated until they reach MaxRunes; the next chunk
-// starts OverlapRunes earlier (by rune position) so boundaries are not cut
-// mid-fact. Chunk *ends* land on unit boundaries; the overlap may start
-// mid-unit, which is fine because it is only redundant context.
+// Chunk splits text into overlapping chunks using a sliding window. Each chunk
+// is ~MaxRunes long and its *end* is snapped forward to the next sentence
+// boundary so facts are never cut mid-sentence. The next chunk starts
+// OverlapRunes before the previous end, so consecutive chunks overlap by about
+// OverlapRunes. The window always advances by (MaxRunes - OverlapRunes), which
+// guarantees termination and prevents the same chunk from being re-emitted.
 func (c *TextChunker) Chunk(text string) []Chunk {
 	max := c.MaxRunes
 	if max <= 0 {
@@ -67,21 +68,19 @@ func (c *TextChunker) Chunk(text string) []Chunk {
 	idx := 0
 	pos := 0
 	for pos < n {
-		u := unitIndexAt(units, pos)
-		size := 0
-		j := u
-		for j < len(units) && (size == 0 || size+(units[j].end-units[j].start) <= max) {
-			size += units[j].end - units[j].start
-			j++
+		rawEnd := pos + max
+		if rawEnd > n {
+			rawEnd = n
 		}
-		if j == u {
-			j = u + 1
+		// Snap the end forward to the next unit boundary (or n) so a chunk
+		// never ends mid-sentence; the leading overlap may start mid-unit.
+		chunkEnd := boundaryAtOrAfter(units, rawEnd)
+		if chunkEnd > n {
+			chunkEnd = n
 		}
-		chunkStart := units[u].start
-		chunkEnd := units[j-1].end
-		chunks = append(chunks, Chunk{Index: idx, Start: chunkStart, End: chunkEnd, Text: string(r[chunkStart:chunkEnd])})
+		chunks = append(chunks, Chunk{Index: idx, Start: pos, End: chunkEnd, Text: string(r[pos:chunkEnd])})
 		idx++
-		if j >= len(units) {
+		if chunkEnd >= n {
 			break
 		}
 		nextPos := chunkEnd - overlap
@@ -93,58 +92,41 @@ func (c *TextChunker) Chunk(text string) []Chunk {
 	return chunks
 }
 
-// unitIndexAt returns the index of the unit containing the rune position pos.
-func unitIndexAt(units []chunkUnit, pos int) int {
-	for i := 0; i < len(units); i++ {
-		if units[i].start <= pos && pos < units[i].end {
-			return i
+// boundaryAtOrAfter returns the smallest unit end that is >= pos (i.e. the next
+// sentence/paragraph boundary at or after pos). If none exists it returns the
+// last unit end.
+func boundaryAtOrAfter(units []chunkUnit, pos int) int {
+	for _, u := range units {
+		if u.end >= pos {
+			return u.end
 		}
 	}
-	return len(units) - 1
+	return units[len(units)-1].end
 }
 
+// buildChunkUnits splits text into sentence-sized units (falling back to hard
+// rune blocks for any sentence longer than max). Paragraph/newline boundaries
+// are intentionally ignored: only sentences define chunk units.
 func buildChunkUnits(r []rune, max int) []chunkUnit {
 	var units []chunkUnit
-	paras := splitOnRune(r, '\n')
-	for _, p := range paras {
-		if p.end-p.start == 0 {
+	sents := splitSentences(r)
+	for _, s := range sents {
+		if s.end-s.start == 0 {
 			continue
 		}
-		if p.end-p.start <= max {
-			units = append(units, p)
+		if s.end-s.start <= max {
+			units = append(units, s)
 			continue
 		}
-		sents := splitSentences(r[p.start:p.end])
-		for _, s := range sents {
-			ss := p.start + s.start
-			se := p.start + s.end
-			if se-ss <= max {
-				units = append(units, chunkUnit{ss, se})
-				continue
+		for k := s.start; k < s.end; k += max {
+			e := k + max
+			if e > s.end {
+				e = s.end
 			}
-			for k := ss; k < se; k += max {
-				e := k + max
-				if e > se {
-					e = se
-				}
-				units = append(units, chunkUnit{k, e})
-			}
+			units = append(units, chunkUnit{k, e})
 		}
 	}
 	return units
-}
-
-func splitOnRune(r []rune, sep rune) []chunkUnit {
-	var out []chunkUnit
-	start := 0
-	for i := 0; i < len(r); i++ {
-		if r[i] == sep {
-			out = append(out, chunkUnit{start, i})
-			start = i + 1
-		}
-	}
-	out = append(out, chunkUnit{start, len(r)})
-	return out
 }
 
 func splitSentences(r []rune) []chunkUnit {
