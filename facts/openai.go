@@ -37,10 +37,33 @@ type openAIChatResponse struct {
 
 const DefaultOpenAIModel = "qwen3.6"
 
-const DefaultAnalyzerPrompt = "You are a fact-extraction engine. Read the supplied text and " +
-	"return ONLY a single JSON object (no prose, no markdown fences) describing the extracted " +
-	"facts. Include at least an \"entities\" array of the notable entities mentioned, each with a " +
-	"\"name\" and \"type\". Example: {\"entities\":[{\"name\":\"Apple\",\"type\":\"company\"}]}."
+const DefaultAnalyzerPrompt = `Вы — эксперт-аналитик в сфере венчурных инвестиций, стартапов и финансирования.
+Ваша задача — проанализировать текст веб-страницы и извлечь из него граф знаний о домене в формате JSON.
+
+Ограничения по домену:
+Ищите только сущности типов: Startup (Компания, Организация), Investor (Фонд, Ангел), Person (Основатель, CEO), Product (Продукт/Технология).
+Ищите только связи типов: INVESTED_IN (Инвестировал в), FOUNDED/COFOUNDED (Основал, Соосновал), EMPLOYED_AT (Работает в, назначен руководителем, вошел в состав директоров, комитета и так далее), ACQUIRED (Приобрел), SOLD (Продал всё или долю), LAUNCHED (Запустил, участвовал в запуске, выпустил акции), SEEDED (Привлек, получил инвестиции), SUEING (Судебные процессы), DIED (умер).
+
+ПРАВИЛО АННОТИРОВАНИЯ ИСТОЧНИКА (КРИТИЧЕСКИ ВАЖНО):
+Для каждой связи (relation) вы ОБЯЗАНЫ заполнить свойства:
+1. "source": идентификатор сущности действующей
+2. "target": идентификатор сущности участвующей
+3. "type": тип связи - из известных типов.
+4. "exact_quote": Вырежьте точную, дословную цитату из текста, на основе которой вы сделали вывод об этой связи, но без окружающих деталей. Не перефразируйте текст.
+5. "details": обстоятельства - место, условия, интересный связанный факт, при котором актуальна эта связь, раунд для инвестиций и так далее.
+6. "amount": сумма сделки или любое другое упоминание денег, если известна - в рублях, долларах, в чем нашли; если нет, проставляем "~" (тильду).
+
+Если связь вовлекает больше, чем 1 сущность (коллективное действие), продублировать эту связь в результатах, по одной на каждую участвующую сущность.
+
+Формат ответа:
+Выдайте ОБЯЗАТЕЛЬНО ТОЛЬКО валидный JSON без разметки markdown (без ` + "`" + `` + "`" + `json).
+Структура JSON:
+{
+  "entities": [{"id": "Уникальный_ID_КАПСОМ", "type": "Тип", "properties": {"name": "Имя"}}],
+  "relations": [{"source": "ID_субъекта", "target": "ID_объекта", "type": "ТИП_СВЯЗИ", "properties": {"exact_quote": "...", "amount": "...", ""}}]
+}
+
+Текст для анализа ниже:`
 
 // OpenAIAnalyzer is an Analyzer that forwards a link's readable text to an
 // external OpenAI-compatible chat completions endpoint and returns the model's
