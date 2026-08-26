@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +23,45 @@ import (
 	grab "meo.ru/rolodex/grab"
 )
 
+// loadEnvFile parses a KEY=VALUE .env file and exports each entry into the
+// process environment (existing variables are not overwritten). A missing file
+// is not an error: the caller may already have the values set elsewhere.
+func loadEnvFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.Trim(strings.TrimSpace(line[idx+1:]), `"'`)
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+	return sc.Err()
+}
+
 func main() {
+	// Load credentials/endpoints from .env (KEY=VALUE) before anything else so
+	// the values are available for configuring the analyzer below.
+	if err := loadEnvFile(".env"); err != nil {
+		log.Fatalf("load .env: %v", err)
+	}
+
 	// Apply all pending database migrations (create/update tables) against the
 	// local sqlite database file. Migrations live in the ./migrations directory
 	// and are versioned; Up is idempotent (ErrNoChange is expected on reruns).
@@ -83,9 +123,15 @@ func main() {
 
 	// Analysis pipeline: every tick it picks a link that has been scraped
 	// (last_scrapped_at set) but has no pass yet, runs its readable text through
-	// the analyzer, and stores the result as a pass. Uses a mock analyzer until
-	// a real one is wired in.
-	fm := facts.NewFactsMachine(db, facts.MockAnalyzer{Result: `{"mock":true}`}, 1*time.Second)
+	// the analyzer, and stores the result as a pass. The analyzer talks to an
+	// external OpenAI-compatible LLM whose URL and bearer key come from .env
+	// (llm_api_url / llm_api_key).
+	llmURL := os.Getenv("llm_api_url")
+	llmKey := os.Getenv("llm_api_key")
+	if llmURL == "" || llmKey == "" {
+		log.Fatal("llm_api_url and llm_api_key must be set (in .env or environment)")
+	}
+	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts")
 	fm.Start()
 	defer fm.Stop()
 

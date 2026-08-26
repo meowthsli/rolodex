@@ -35,20 +35,25 @@ func (m MockAnalyzer) Analyze(ctx context.Context, content string) (string, erro
 
 // FactsMachine periodically pulls the next link whose readable text has not yet
 // been analyzed, runs it through an Analyzer, and persists the result as a pass.
+// Every machine is bound to a single domain, so multiple machines (or the same
+// machine re-run for a different domain) can maintain independent passes per
+// link.
 type FactsMachine struct {
 	db       *sql.DB
 	analyzer Analyzer
+	domain   string
 	passes   *PassesRepository
 	tick     time.Duration
 	stop     chan struct{}
 }
 
-// NewFactsMachine builds a FactsMachine. A non-positive tick defaults to 5s.
-func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration) *FactsMachine {
+// NewFactsMachine builds a FactsMachine for the given domain. A non-positive
+// tick defaults to 5s.
+func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration, domain string) *FactsMachine {
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
-	return &FactsMachine{db: db, analyzer: analyzer, passes: NewPassesRepository(db), tick: tick}
+	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, passes: NewPassesRepository(db), tick: tick}
 }
 
 // Start launches the analysis loop in a background goroutine.
@@ -95,9 +100,9 @@ type linkContent struct {
 func (m *FactsMachine) nextUnprocessedLink(ctx context.Context) (id int, readable string, found bool, err error) {
 	lc, err := sq.FetchOneContext(ctx, m.db, sq.SQLite.Queryf(
 		"SELECT lq.id AS \"lq.link_id\", lq.readable_text AS \"lq.readable_text\" FROM link_queue lq "+
-			"LEFT JOIN passes p ON p.link_queue_id = lq.id "+
+			"LEFT JOIN passes p ON p.link_queue_id = lq.id AND p.domain = {} "+
 			"WHERE lq.last_scrapped_at IS NOT NULL AND p.id IS NULL "+
-			"LIMIT 1"),
+			"LIMIT 1", m.domain),
 		func(row *sq.Row) linkContent {
 			return linkContent{
 				ID:       row.Int("lq.link_id"),
@@ -129,10 +134,10 @@ func (m *FactsMachine) ProcessOnce(ctx context.Context) error {
 	result, aerr := m.analyzer.Analyze(ctx, readable)
 	if aerr != nil {
 		log.Printf("analysis failed for link id=%d: %v; recording error", id, aerr)
-		return m.passes.SetPassError(id, aerr.Error())
+		return m.passes.SetPassError(id, m.domain, aerr.Error())
 	}
 
-	if _, err := m.passes.UpsertPass(id, HashContent(readable), result); err != nil {
+	if _, err := m.passes.UpsertPass(id, m.domain, HashContent(readable), result); err != nil {
 		return err
 	}
 

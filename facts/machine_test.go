@@ -36,12 +36,12 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":["Apple"]}`}, 0)
+	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":["Apple"]}`}, 0, "facts")
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
 	}
 
-	pass, err := repo.GetPassByLink(linkID)
+	pass, err := repo.GetPassByLink(linkID, "facts")
 	if err != nil {
 		t.Fatalf("get pass: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, 0)
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, 0, "facts")
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -92,12 +92,12 @@ func TestProcessOnceSkipsNotScrapedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, 0)
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, 0, "facts")
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
 	}
 
-	_, err := NewPassesRepository(db).GetPassByLink(linkID)
+	_, err := NewPassesRepository(db).GetPassByLink(linkID, "facts")
 	if err != sql.ErrNoRows {
 		t.Errorf("expected no pass for unscraped link, got %v", err)
 	}

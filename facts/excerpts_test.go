@@ -12,7 +12,7 @@ func TestSaveExcerptDeDup(t *testing.T) {
 	excerpts := NewExcerptsRepository(db)
 	linkID := insertLink(t, db)
 
-	pass, err := passes.UpsertPass(linkID, "h", "{}")
+	pass, err := passes.UpsertPass(linkID, "facts", "h", "{}")
 	if err != nil {
 		t.Fatalf("upsert pass: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestSaveExcerptDistinctOffsets(t *testing.T) {
 	excerpts := NewExcerptsRepository(db)
 	linkID := insertLink(t, db)
 
-	pass, err := passes.UpsertPass(linkID, "h", "{}")
+	pass, err := passes.UpsertPass(linkID, "facts", "h", "{}")
 	if err != nil {
 		t.Fatalf("upsert pass: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestListExcerptsByLinkJoinsThroughPass(t *testing.T) {
 	excerpts := NewExcerptsRepository(db)
 	linkID := insertLink(t, db)
 
-	pass, err := passes.UpsertPass(linkID, "h", "{}")
+	pass, err := passes.UpsertPass(linkID, "facts", "h", "{}")
 	if err != nil {
 		t.Fatalf("upsert pass: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestListExcerptsByLinkJoinsThroughPass(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, err := excerpts.ListExcerptsByLink(linkID)
+	got, err := excerpts.ListExcerptsByLink(linkID, "facts")
 	if err != nil {
 		t.Fatalf("list by link: %v", err)
 	}

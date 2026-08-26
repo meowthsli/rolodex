@@ -85,11 +85,13 @@ func (r *ExcerptsRepository) ListExcerptsByPass(passID int) ([]Excerpt, error) {
 		"SELECT {*} FROM excerpts WHERE pass_id = {}", passID), ExcerptMapper)
 }
 
-// ListExcerptsByLink returns all excerpts for a link, reached by joining
-// through its pass (excerpts have no direct link_queue_id by design).
-func (r *ExcerptsRepository) ListExcerptsByLink(linkQueueID int) ([]Excerpt, error) {
+// ListExcerptsByLink returns all excerpts for a link within a domain, reached
+// by joining through that domain's pass (excerpts have no direct link_queue_id
+// by design).
+func (r *ExcerptsRepository) ListExcerptsByLink(linkQueueID int, domain string) ([]Excerpt, error) {
 	return sq.FetchAll(r.db, sq.SQLite.Queryf(
 		"SELECT e.id, e.pass_id, e.text, e.start_offset, e.end_offset, e.span_hash "+
-			"FROM excerpts e JOIN passes p ON p.id = e.pass_id WHERE p.link_queue_id = {}",
-		linkQueueID), ExcerptMapper)
+			"FROM excerpts e JOIN passes p ON p.id = e.pass_id "+
+			"WHERE p.link_queue_id = {} AND p.domain = {}",
+		linkQueueID, domain), ExcerptMapper)
 }
