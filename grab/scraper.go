@@ -118,7 +118,7 @@ func (s *Scraper) scrapeOnce() error {
 	}
 	added, skipped := 0, 0
 	for _, u := range discovered {
-		if _, err := s.repo.NewLink(u); err != nil {
+		if _, err := s.repo.NewLink(u, link.Generation+1); err != nil {
 			if errors.Is(err, ErrLinkExists) {
 				skipped++
 				continue

@@ -31,12 +31,13 @@ type chunkUnit struct {
 	end   int
 }
 
-// Chunk splits text into overlapping chunks using a sliding window. Each chunk
-// is ~MaxRunes long and its *end* is snapped forward to the next sentence
-// boundary so facts are never cut mid-sentence. The next chunk starts
-// OverlapRunes before the previous end, so consecutive chunks overlap by about
-// OverlapRunes. The window always advances by (MaxRunes - OverlapRunes), which
-// guarantees termination and prevents the same chunk from being re-emitted.
+// Chunk splits text into overlapping chunks, each consisting ONLY of whole
+// sentences (never a partial sentence). Sentences are packed greedily up to
+// MaxRunes; a single sentence longer than MaxRunes is kept intact as its own
+// chunk even though it exceeds the limit. Consecutive chunks overlap by about
+// OverlapRunes: the next chunk starts at a sentence boundary inside the
+// previous chunk and re-includes those trailing sentences, so every chunk
+// boundary is a real sentence end.
 func (c *TextChunker) Chunk(text string) []Chunk {
 	max := c.MaxRunes
 	if max <= 0 {
@@ -59,72 +60,57 @@ func (c *TextChunker) Chunk(text string) []Chunk {
 		return []Chunk{{Index: 0, Start: 0, End: n, Text: string(r)}}
 	}
 
-	units := buildChunkUnits(r, max)
+	units := buildChunkUnits(r)
 	if len(units) == 0 {
 		return []Chunk{{Index: 0, Start: 0, End: n, Text: string(r)}}
 	}
 
 	var chunks []Chunk
 	idx := 0
-	pos := 0
-	for pos < n {
-		rawEnd := pos + max
-		if rawEnd > n {
-			rawEnd = n
+	start := 0
+	total := len(units)
+	for start < total {
+		// Pack whole sentences until adding the next would exceed MaxRunes.
+		size := 0
+		j := start
+		for j < total && (size == 0 || size+(units[j].end-units[j].start) <= max) {
+			size += units[j].end - units[j].start
+			j++
 		}
-		// Snap the end forward to the next unit boundary (or n) so a chunk
-		// never ends mid-sentence; the leading overlap may start mid-unit.
-		chunkEnd := boundaryAtOrAfter(units, rawEnd)
-		if chunkEnd > n {
-			chunkEnd = n
+		if j == start {
+			j = start + 1
 		}
-		chunks = append(chunks, Chunk{Index: idx, Start: pos, End: chunkEnd, Text: string(r[pos:chunkEnd])})
+		end := j
+		chunkStart := units[start].start
+		chunkEnd := units[end-1].end
+		chunks = append(chunks, Chunk{Index: idx, Start: chunkStart, End: chunkEnd, Text: string(r[chunkStart:chunkEnd])})
 		idx++
-		if chunkEnd >= n {
+		if end >= total {
 			break
 		}
-		nextPos := chunkEnd - overlap
-		if nextPos <= pos {
-			nextPos = pos + 1
+		// Next chunk starts at a sentence boundary inside this chunk so the two
+		// share trailing sentences (the overlap). Advance at least one sentence
+		// to guarantee termination.
+		target := chunkEnd - overlap
+		next := start + 1
+		for next < end-1 && units[next+1].start <= target {
+			next++
 		}
-		pos = nextPos
+		start = next
 	}
 	return chunks
 }
 
-// boundaryAtOrAfter returns the smallest unit end that is >= pos (i.e. the next
-// sentence/paragraph boundary at or after pos). If none exists it returns the
-// last unit end.
-func boundaryAtOrAfter(units []chunkUnit, pos int) int {
-	for _, u := range units {
-		if u.end >= pos {
-			return u.end
-		}
-	}
-	return units[len(units)-1].end
-}
-
-// buildChunkUnits splits text into sentence-sized units (falling back to hard
-// rune blocks for any sentence longer than max). Paragraph/newline boundaries
-// are intentionally ignored: only sentences define chunk units.
-func buildChunkUnits(r []rune, max int) []chunkUnit {
+// buildChunkUnits splits text into whole-sentence units. A sentence longer than
+// MaxRunes is kept intact (it becomes a single oversized unit) — callers must
+// never split a sentence.
+func buildChunkUnits(r []rune) []chunkUnit {
 	var units []chunkUnit
-	sents := splitSentences(r)
-	for _, s := range sents {
+	for _, s := range splitSentences(r) {
 		if s.end-s.start == 0 {
 			continue
 		}
-		if s.end-s.start <= max {
-			units = append(units, s)
-			continue
-		}
-		for k := s.start; k < s.end; k += max {
-			e := k + max
-			if e > s.end {
-				e = s.end
-			}
-			units = append(units, chunkUnit{k, e})
-		}
+		units = append(units, s)
 	}
 	return units
 }
@@ -133,15 +119,40 @@ func splitSentences(r []rune) []chunkUnit {
 	var out []chunkUnit
 	start := 0
 	for i := 0; i < len(r); i++ {
-		if isSentenceTerminator(r[i]) {
-			out = append(out, chunkUnit{start, i + 1})
+		c := r[i]
+		if isSentenceTerminator(c) {
+			// Extend past any trailing whitespace so each sentence unit ends on
+			// the terminator (and the next unit starts on a real character),
+			// preventing a leading space from becoming part of the next
+			// sentence or a whitespace-only fragment of its own.
+			end := i + 1
+			for end < len(r) && isSpace(r[end]) {
+				end++
+			}
+			out = append(out, chunkUnit{start, end})
+			start = end
+			i = start - 1
+		} else if c == '\n' || c == '\r' {
+			// A newline is a sentence separator even when the line has no
+			// terminator punctuation, so unpunctuated lines stay whole.
+			if i > start {
+				out = append(out, chunkUnit{start, i})
+			}
 			start = i + 1
+			for start < len(r) && isSpace(r[start]) {
+				start++
+			}
+			i = start - 1
 		}
 	}
 	if start < len(r) {
 		out = append(out, chunkUnit{start, len(r)})
 	}
 	return out
+}
+
+func isSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
 }
 
 func isSentenceTerminator(r rune) bool {

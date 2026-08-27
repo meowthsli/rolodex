@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS link_queue (
 	readable_text TEXT,
 	last_scrapped_at DATETIME,
 	added_at DATETIME,
-	error TEXT
+	error TEXT,
+	generation INTEGER NOT NULL DEFAULT 1
 );
 
 -- Partial index over links that still need scraping: those never scraped

@@ -19,6 +19,7 @@ type LINK_QUEUE struct {
 	LastScrappedAt sq.TimeField  `sq:"last_scrapped_at"`
 	AddedAt       sq.TimeField   `sq:"added_at"`
 	Error         sq.StringField `sq:"error"`
+	Generation    sq.NumberField `sq:"generation"`
 }
 
 var LQ = sq.New[LINK_QUEUE]("lq")
@@ -32,6 +33,7 @@ type LinkQueue struct {
 	LastScrappedAt sql.NullTime
 	AddedAt       sql.NullTime
 	Error         sql.NullString
+	Generation    int
 }
 
 // Mapper scans a row from the link_queue table into a LinkQueue.
@@ -44,6 +46,7 @@ func Mapper(row *sq.Row) LinkQueue {
 	l.LastScrappedAt = row.NullTime("last_scrapped_at")
 	l.AddedAt = row.NullTime("added_at")
 	l.Error = row.NullString("error")
+	l.Generation = row.Int("generation")
 	return l
 }
 
@@ -61,13 +64,14 @@ func NewLinksRepository(db *sql.DB) *LinksRepository {
 // URL is already present in the queue.
 var ErrLinkExists = errors.New("link already exists")
 
-// NewLink is the link constructor. It normalizes the URL and only inserts a
-// new row when no link with that URL already exists. If the link already
-// exists, it re-queues it by stamping added_at with the current time (so the
-// scraper re-fetches it if the stored content predates this rediscovery) and
-// returns the existing row together with ErrLinkExists so the caller knows it
-// can skip inserting a duplicate row.
-func (r *LinksRepository) NewLink(rawURL string) (LinkQueue, error) {
+// NewLink is the link constructor. It normalizes the URL, stamps the given
+// generation and only inserts a new row when no link with that URL already
+// exists. If the link already exists, it re-queues it by stamping added_at with
+// the current time (so the scraper re-fetches it if the stored content predates
+// this rediscovery) and returns the existing row together with ErrLinkExists so
+// the caller knows it can skip inserting a duplicate row. The existing row's
+// generation is preserved on rediscovery.
+func (r *LinksRepository) NewLink(rawURL string, generation int) (LinkQueue, error) {
 	url := normalizeURL(rawURL)
 
 	existing, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
@@ -86,7 +90,7 @@ func (r *LinksRepository) NewLink(rawURL string) (LinkQueue, error) {
 	}
 
 	_, err = sq.Exec(r.db, sq.SQLite.Queryf(
-		"INSERT INTO link_queue (url, added_at) VALUES ({}, {})", url, time.Now()))
+		"INSERT INTO link_queue (url, generation, added_at) VALUES ({}, {}, {})", url, generation, time.Now()))
 	if err != nil {
 		return LinkQueue{}, err
 	}

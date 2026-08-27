@@ -11,7 +11,7 @@ func TestNewLink(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	link, err := repo.NewLink("https://example.com")
+	link, err := repo.NewLink("https://example.com", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
@@ -38,13 +38,13 @@ func TestNewLinkSkipsDuplicate(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	first, err := repo.NewLink("https://example.com")
+	first, err := repo.NewLink("https://example.com", 1)
 	if err != nil {
 		t.Fatalf("first NewLink: %v", err)
 	}
 
 	// Same host but different scheme/normalized form should hit the duplicate.
-	second, err := repo.NewLink("http://example.com")
+	second, err := repo.NewLink("http://example.com", 1)
 	if !errors.Is(err, ErrLinkExists) {
 		t.Fatalf("expected ErrLinkExists, got %v", err)
 	}
@@ -54,11 +54,11 @@ func TestNewLinkSkipsDuplicate(t *testing.T) {
 
 	// Same URL but with query parameters in a different order must also be
 	// treated as the same (already existing) link.
-	third, err := repo.NewLink("https://example.com?b=2&a=1")
+	third, err := repo.NewLink("https://example.com?b=2&a=1", 1)
 	if err != nil {
 		t.Fatalf("third NewLink: %v", err)
 	}
-	fourth, err := repo.NewLink("https://example.com?a=1&b=2")
+	fourth, err := repo.NewLink("https://example.com?a=1&b=2", 1)
 	if !errors.Is(err, ErrLinkExists) {
 		t.Fatalf("expected ErrLinkExists for reordered query, got %v", err)
 	}
@@ -85,7 +85,7 @@ func TestGetNextPendingLinkRequeuesStaleContent(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	// Fresh link: not yet scraped, so it is pending.
-	link, err := repo.NewLink("https://stale.example.com")
+	link, err := 	repo.NewLink("https://stale.example.com", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestGetNextPendingLinkRequeuesStaleContent(t *testing.T) {
 
 	// Rediscover the same URL: NewLink bumps added_at to now, which is later
 	// than the stored content, so the link becomes pending again.
-	if _, err := repo.NewLink("https://stale.example.com"); !errors.Is(err, ErrLinkExists) {
+	if _, err := 	repo.NewLink("https://stale.example.com", 1); !errors.Is(err, ErrLinkExists) {
 		t.Fatalf("expected ErrLinkExists on rediscovery, got %v", err)
 	}
 	pending, err = repo.GetNextPendingLink()
@@ -131,7 +131,7 @@ func TestUpdateLink(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	added, err := repo.NewLink("https://old.example.com")
+	added, err := repo.NewLink("https://old.example.com", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSaveScrapeResultRejectsEmptyReadable(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	link, err := repo.NewLink("https://empty.example.com")
+	link, err := repo.NewLink("https://empty.example.com", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}

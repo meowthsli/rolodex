@@ -29,7 +29,7 @@ func TestScraper(t *testing.T) {
 	for i := 0; i < total; i++ {
 		paths[i] = "/page" + strconv.Itoa(i)
 		url := server.URL + paths[i]
-		if _, err := repo.NewLink(url); err != nil {
+		if _, err := repo.NewLink(url, 1); err != nil {
 			t.Fatalf("AddLink: %v", err)
 		}
 	}
@@ -120,10 +120,10 @@ func TestScraperRecordsError(t *testing.T) {
 		}),
 	}
 
-	if _, err := repo.NewLink("http://fail.local/broken"); err != nil {
+	if _, err := repo.NewLink("http://fail.local/broken", 1); err != nil {
 		t.Fatalf("AddLink (bad): %v", err)
 	}
-	if _, err := repo.NewLink(server.URL + "/ok"); err != nil {
+	if _, err := repo.NewLink(server.URL+"/ok", 1); err != nil {
 		t.Fatalf("AddLink (good): %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestScraperSavesReadableText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed, err := repo.NewLink(server.URL + "/")
+	seed, err := repo.NewLink(server.URL+"/", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestScraperDiscoversLinks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	seed, err := repo.NewLink(server.URL + "/")
+	seed, err := repo.NewLink(server.URL+"/", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
@@ -335,4 +335,58 @@ func TestScraperDiscoversLinks(t *testing.T) {
 			t.Errorf("expected discovered link %q in queue, got %v", want, links)
 		}
 	}
+}
+
+// TestScraperPropagatesGeneration seeds a page at generation 1 and verifies that
+// links discovered while scraping it are enqueued at generation 2 (parent + 1),
+// so a cycle or fake links cannot run the scraper infinitely without a bound.
+func TestScraperPropagatesGeneration(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<html><body><a href="/page1">1</a></body></html>`)
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL+"/", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+	if seed.Generation != 1 {
+		t.Fatalf("seed generation = %d, want 1", seed.Generation)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, 20*time.Millisecond)
+	scraper.Start()
+	defer scraper.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lk, err := repo.GetLink(seed.ID)
+		if err == nil && lk.LastScrappedAt.Valid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for seed scrape")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	scraper.Stop()
+
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	host := strings.TrimPrefix(server.URL, "http://")
+	for _, l := range links {
+		if l.URL == host+"/page1" {
+			if l.Generation != seed.Generation+1 {
+				t.Errorf("discovered link generation = %d, want %d", l.Generation, seed.Generation+1)
+			}
+			return
+		}
+	}
+	t.Fatal("discovered link not found in queue")
 }
