@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
-	"strconv"
 	"strings"
 	"time"
+
+	sq "github.com/bokwoon95/sq"
 )
 
 // Tuning constants for the reconciliation pipeline.
@@ -59,6 +60,23 @@ func allTypeIs(types []string, t string) bool {
 	return true
 }
 
+// ENTITIES describes the entities table: one canonical row per real-world
+// entity. Aliases, mentions and the FTS index fan out from it.
+type ENTITIES struct {
+	sq.TableStruct
+	ID             sq.NumberField `sq:"id"`
+	DisplayName    sq.StringField `sq:"display_name"`
+	Types          sq.StringField `sq:"types"`
+	Properties     sq.StringField `sq:"properties"`
+	Confidence     sq.StringField `sq:"confidence"`
+	PromotionScore sq.NumberField `sq:"promotion_score"`
+	IsKnown        sq.NumberField `sq:"is_known"`
+	CreatedAt      sq.TimeField   `sq:"created_at"`
+	UpdatedAt      sq.TimeField   `sq:"updated_at"`
+}
+
+var EN = sq.New[ENTITIES]("e")
+
 // Entity is the Go model for a canonical row in the entities table.
 type Entity struct {
 	ID             int
@@ -70,6 +88,22 @@ type Entity struct {
 	IsKnown        bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+// EntityMapper scans a row from the entities table into an Entity. It is the
+// single, strict mapper used whenever an entity row is loaded.
+func EntityMapper(row *sq.Row) Entity {
+	var e Entity
+	e.ID = row.Int("id")
+	e.DisplayName = row.String("display_name")
+	e.Types = unmarshalTypes(row.String("types"))
+	e.Properties = row.String("properties")
+	e.Confidence = row.String("confidence")
+	e.PromotionScore = row.Int("promotion_score")
+	e.IsKnown = row.Int("is_known") != 0
+	e.CreatedAt = row.Time("created_at")
+	e.UpdatedAt = row.Time("updated_at")
+	return e
 }
 
 // EntitiesRepository provides entity/alias/mention operations and reconciliation.
@@ -88,7 +122,8 @@ func NewEntitiesRepository(db *sql.DB) *EntitiesRepository {
 }
 
 func (r *EntitiesRepository) ensureFTS() {
-	_, err := r.db.Exec("CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')")
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
 	if err != nil {
 		log.Printf("fts5 unavailable, fuzzy matching disabled: %v", err)
 		r.ftsAvailable = false
@@ -101,32 +136,21 @@ func (r *EntitiesRepository) ensureFTS() {
 // can skip fuzzy-dependent cases when built without -tags sqlite_fts5.
 func (r *EntitiesRepository) FTSAvailable() bool { return r.ftsAvailable }
 
-func (r *EntitiesRepository) scanEntity(row *sql.Row) (Entity, error) {
-	var e Entity
-	var types, props string
-	var isKnown int
-	if err := row.Scan(&e.ID, &e.DisplayName, &types, &props, &e.Confidence, &e.PromotionScore, &isKnown, &e.CreatedAt, &e.UpdatedAt); err != nil {
-		return Entity{}, err
-	}
-	e.Types = unmarshalTypes(types)
-	e.Properties = props
-	e.IsKnown = isKnown != 0
-	return e, nil
-}
-
+// GetEntity loads a single entity by id via the strict EntityMapper.
 func (r *EntitiesRepository) GetEntity(id int) (Entity, error) {
-	return r.scanEntity(r.db.QueryRow(
-		"SELECT id, display_name, types, properties, confidence, promotion_score, is_known, created_at, updated_at FROM entities WHERE id = ?", id))
+	return sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM entities WHERE id = {}", id), EntityMapper)
 }
 
 // lookupAlias resolves a normalized alias to its canonical entity, if present.
 func (r *EntitiesRepository) lookupAlias(alias string) (Entity, bool, error) {
-	var id int
-	err := r.db.QueryRow("SELECT entity_id FROM entity_aliases WHERE alias = ?", alias).Scan(&id)
-	if err == sql.ErrNoRows {
-		return Entity{}, false, nil
-	}
+	id, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT entity_id FROM entity_aliases WHERE alias = {}", alias),
+		func(row *sq.Row) int { return row.Int("entity_id") })
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return Entity{}, false, nil
+		}
 		return Entity{}, false, err
 	}
 	e, err := r.GetEntity(id)
@@ -134,7 +158,8 @@ func (r *EntitiesRepository) lookupAlias(alias string) (Entity, bool, error) {
 		if err == sql.ErrNoRows {
 			// Alias points at an entity that was merged away or deleted: drop
 			// the dangling alias and treat it as not found.
-			_, _ = r.db.Exec("DELETE FROM entity_aliases WHERE alias = ?", alias)
+			_, _ = sq.Exec(r.db, sq.SQLite.Queryf(
+				"DELETE FROM entity_aliases WHERE alias = {}", alias))
 			return Entity{}, false, nil
 		}
 		return Entity{}, false, err
@@ -146,13 +171,16 @@ func (r *EntitiesRepository) upsertAlias(entityID int, alias, rawName string) er
 	if alias == "" {
 		return nil
 	}
-	_, err := r.db.Exec("INSERT OR IGNORE INTO entity_aliases (entity_id, alias, raw_name) VALUES (?, ?, ?)", entityID, alias, rawName)
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT OR IGNORE INTO entity_aliases (entity_id, alias, raw_name) VALUES ({}, {}, {})",
+		entityID, alias, rawName))
 	return err
 }
 
 func (r *EntitiesRepository) addMention(entityID, passID, linkID, chunk int) error {
-	_, err := r.db.Exec("INSERT OR IGNORE INTO entity_mentions (entity_id, pass_id, link_id, chunk_index) VALUES (?, ?, ?, ?)",
-		entityID, passID, linkID, chunk)
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT OR IGNORE INTO entity_mentions (entity_id, pass_id, link_id, chunk_index) VALUES ({}, {}, {}, {})",
+		entityID, passID, linkID, chunk))
 	return err
 }
 
@@ -170,19 +198,13 @@ func (r *EntitiesRepository) entityNames(id int) ([]string, error) {
 		return nil, err
 	}
 	names := []string{e.DisplayName}
-	rows, err := r.db.Query("SELECT raw_name FROM entity_aliases WHERE entity_id = ?", id)
+	raws, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT raw_name FROM entity_aliases WHERE entity_id = {}", id),
+		func(row *sq.Row) string { return row.String("raw_name") })
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		names = append(names, n)
-	}
-	return names, nil
+	return append(names, raws...), nil
 }
 
 // createEntity inserts a brand-new canonical entity with a single property
@@ -192,17 +214,13 @@ func (r *EntitiesRepository) createEntity(displayName string, types []string, pr
 	if len(props) > 0 {
 		propArr = mustJSON([]json.RawMessage{props})
 	}
-	res, err := r.db.Exec(
-		"INSERT INTO entities (display_name, types, properties) VALUES (?, ?, ?)",
-		displayName, marshalTypes(types), propArr)
+	res, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT INTO entities (display_name, types, properties) VALUES ({}, {}, {})",
+		displayName, marshalTypes(types), propArr))
 	if err != nil {
 		return Entity{}, err
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return Entity{}, err
-	}
-	return r.GetEntity(int(id))
+	return r.GetEntity(int(res.LastInsertId))
 }
 
 // mergeEntityData folds a newly seen mention (name, model id, properties, type)
@@ -215,9 +233,9 @@ func (r *EntitiesRepository) mergeEntityData(e Entity, name, modelID string, pro
 	if name != "" && len(name) > len(display) {
 		display = name
 	}
-	if _, err := r.db.Exec(
-		"UPDATE entities SET display_name = ?, types = ?, properties = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		display, marshalTypes(newTypes), newProps, e.ID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE entities SET display_name = {}, types = {}, properties = {}, updated_at = CURRENT_TIMESTAMP WHERE id = {}",
+		display, marshalTypes(newTypes), newProps, e.ID)); err != nil {
 		return e, err
 	}
 	return r.GetEntity(e.ID)
@@ -226,11 +244,11 @@ func (r *EntitiesRepository) mergeEntityData(e Entity, name, modelID string, pro
 // bumpPromotion records a new "founding" of the entity and auto-promotes it to
 // known once it reaches the promotion threshold.
 func (r *EntitiesRepository) bumpPromotion(id int) error {
-	_, err := r.db.Exec(
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"UPDATE entities SET promotion_score = promotion_score + 1, "+
-			"is_known = CASE WHEN promotion_score + 1 >= ? THEN 1 ELSE is_known END, "+
-			"updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		promotionThreshold, id)
+			"is_known = CASE WHEN promotion_score + 1 >= {} THEN 1 ELSE is_known END, "+
+			"updated_at = CURRENT_TIMESTAMP WHERE id = {}",
+		promotionThreshold, id))
 	return err
 }
 
@@ -240,7 +258,8 @@ func (r *EntitiesRepository) syncFTS(entityID int) error {
 	if !r.ftsAvailable {
 		return nil
 	}
-	if _, err := r.db.Exec("DELETE FROM entity_fts WHERE entity_id = ?", entityID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM entity_fts WHERE entity_id = {}", entityID)); err != nil {
 		return err
 	}
 	names, err := r.entityNames(entityID)
@@ -251,7 +270,8 @@ func (r *EntitiesRepository) syncFTS(entityID int) error {
 		if n == "" {
 			continue
 		}
-		if _, err := r.db.Exec("INSERT INTO entity_fts (entity_id, name) VALUES (?, ?)", entityID, n); err != nil {
+		if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+			"INSERT INTO entity_fts (entity_id, name) VALUES ({}, {})", entityID, n)); err != nil {
 			return err
 		}
 	}
@@ -271,27 +291,28 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 		return nil, nil
 	}
 	q := "\"" + strings.ReplaceAll(name, "\"", "") + "\""
-	rows, err := r.db.Query("SELECT entity_id, name FROM entity_fts WHERE name MATCH ?", q)
+	rows, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT entity_id, name FROM entity_fts WHERE name MATCH {}", q),
+		func(row *sq.Row) struct {
+			EntityID int
+			Name     string
+		} {
+			return struct {
+				EntityID int
+				Name     string
+			}{EntityID: row.Int("entity_id"), Name: row.String("name")}
+		})
 	if err != nil {
 		return nil, nil // unparseable query -> no candidates
 	}
-	defer rows.Close()
 	seen := make(map[int]bool)
 	var out []fuzzyCandidate
-	for rows.Next() {
-		var eidStr, nm string
-		if err := rows.Scan(&eidStr, &nm); err != nil {
-			return nil, err
-		}
-		eid, perr := strconv.Atoi(eidStr)
-		if perr != nil {
+	for _, h := range rows {
+		if seen[h.EntityID] {
 			continue
 		}
-		if seen[eid] {
-			continue
-		}
-		seen[eid] = true
-		e, err := r.GetEntity(eid)
+		seen[h.EntityID] = true
+		e, err := r.GetEntity(h.EntityID)
 		if err != nil {
 			// The FTS index can reference an entity that was merged away or
 			// deleted; skip the stale candidate instead of failing the pass.
@@ -300,7 +321,7 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 			}
 			return nil, err
 		}
-		out = append(out, fuzzyCandidate{Entity: e, Score: similarity(name, nm)})
+		out = append(out, fuzzyCandidate{Entity: e, Score: similarity(name, h.Name)})
 	}
 	return out, nil
 }
@@ -364,7 +385,8 @@ func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
 }
 
 func (r *EntitiesRepository) markExtracted(passID int) {
-	_, _ = r.db.Exec("UPDATE passes SET extracted_at = CURRENT_TIMESTAMP WHERE id = ?", passID)
+	_, _ = sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE passes SET extracted_at = CURRENT_TIMESTAMP WHERE id = {}", passID))
 }
 
 // resolveAndMerge is the single entry point for folding one mention into the
@@ -470,7 +492,9 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 	}
 
 	// Redirect loser's mentions to the survivor.
-	if _, err := r.db.Exec("UPDATE OR IGNORE entity_mentions SET entity_id = ? WHERE entity_id = ?", survivor.ID, loser.ID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE OR IGNORE entity_mentions SET entity_id = {} WHERE entity_id = {}",
+		survivor.ID, loser.ID)); err != nil {
 		return err
 	}
 	loserAliases, err := r.aliasesFor(loser.ID)
@@ -487,25 +511,33 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 		}
 	}
 
-	if _, err := r.db.Exec(
-		"UPDATE entities SET display_name = ?, types = ?, properties = ?, promotion_score = promotion_score + ?, "+
-			"is_known = CASE WHEN is_known = 1 OR ? = 1 THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		display, marshalTypes(newTypes), newProps, loser.PromotionScore, loser.IsKnown, survivor.ID); err != nil {
+	loserKnown := 0
+	if loser.IsKnown {
+		loserKnown = 1
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE entities SET display_name = {}, types = {}, properties = {}, promotion_score = promotion_score + {}, "+
+			"is_known = CASE WHEN is_known = 1 OR {} = 1 THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE id = {}",
+		display, marshalTypes(newTypes), newProps, loser.PromotionScore, loserKnown, survivor.ID)); err != nil {
 		return err
 	}
 
-	if _, err := r.db.Exec("DELETE FROM entity_aliases WHERE entity_id = ?", loser.ID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM entity_aliases WHERE entity_id = {}", loser.ID)); err != nil {
 		return err
 	}
 	if r.ftsAvailable {
-		if _, err := r.db.Exec("DELETE FROM entity_fts WHERE entity_id = ?", loser.ID); err != nil {
+		if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+			"DELETE FROM entity_fts WHERE entity_id = {}", loser.ID)); err != nil {
 			return err
 		}
 	}
-	if _, err := r.db.Exec("INSERT OR IGNORE INTO entity_redirects (old_id, new_id) VALUES (?, ?)", loser.ID, survivor.ID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT OR IGNORE INTO entity_redirects (old_id, new_id) VALUES ({}, {})", loser.ID, survivor.ID)); err != nil {
 		return err
 	}
-	if _, err := r.db.Exec("DELETE FROM entities WHERE id = ?", loser.ID); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM entities WHERE id = {}", loser.ID)); err != nil {
 		return err
 	}
 	return r.syncFTS(survivor.ID)
@@ -531,48 +563,19 @@ func pickSurvivor(a, b Entity) (survivor, loser Entity) {
 }
 
 func (r *EntitiesRepository) allEntities() ([]Entity, error) {
-	rows, err := r.db.Query("SELECT id, display_name, types, properties, confidence, promotion_score, is_known, created_at, updated_at FROM entities")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Entity
-	for rows.Next() {
-		var e Entity
-		var types, props string
-		var isKnown int
-		if err := rows.Scan(&e.ID, &e.DisplayName, &types, &props, &e.Confidence, &e.PromotionScore, &isKnown, &e.CreatedAt, &e.UpdatedAt); err != nil {
-			return nil, err
-		}
-		e.Types = unmarshalTypes(types)
-		e.Properties = props
-		e.IsKnown = isKnown != 0
-		out = append(out, e)
-	}
-	return out, nil
+	return sq.FetchAll(r.db, sq.SQLite.Queryf("SELECT {*} FROM entities"), EntityMapper)
 }
 
 func (r *EntitiesRepository) aliasesFor(id int) ([]string, error) {
-	rows, err := r.db.Query("SELECT alias FROM entity_aliases WHERE entity_id = ?", id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var a string
-		if err := rows.Scan(&a); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, nil
+	return sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT alias FROM entity_aliases WHERE entity_id = {}", id),
+		func(row *sq.Row) string { return row.String("alias") })
 }
 
 func (r *EntitiesRepository) rawNameForAlias(alias string) (string, error) {
-	var raw string
-	err := r.db.QueryRow("SELECT raw_name FROM entity_aliases WHERE alias = ?", alias).Scan(&raw)
-	return raw, err
+	return sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT raw_name FROM entity_aliases WHERE alias = {}", alias),
+		func(row *sq.Row) string { return row.String("raw_name") })
 }
 
 // llmAnalysis is the subset of the model result we consume for entities.
