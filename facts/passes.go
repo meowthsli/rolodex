@@ -127,6 +127,14 @@ func (r *PassesRepository) DeletePassesByLinkDomain(linkQueueID int, domain stri
 	return err
 }
 
+// ListUnextractedPasses returns every pass whose result has not yet been parsed
+// into entities (extracted_at IS NULL). Used by the reconcile command to
+// backfill entity extraction idempotently.
+func (r *PassesRepository) ListUnextractedPasses() ([]Pass, error) {
+	return sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM passes WHERE extracted_at IS NULL ORDER BY id"), PassMapper)
+}
+
 // SetPassError records a failure for one chunk of a link/domain, so callers can
 // distinguish "not yet analyzed" (no row) from "analysis failed".
 func (r *PassesRepository) SetPassError(linkQueueID int, domain string, chunkIndex, chunkStart, chunkEnd int, chunkText, errMsg string) error {

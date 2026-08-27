@@ -37,13 +37,14 @@ func (m MockAnalyzer) Analyze(ctx context.Context, content string) (string, erro
 // been analyzed, runs it through an Analyzer, and persists the result as a pass.
 // Every machine is bound to a single domain, so multiple machines (or the same
 // machine re-run for a different domain) can maintain independent passes per
-// link.
+// link. Analyzed entities are reconciled into the canonical entities table.
 type FactsMachine struct {
 	db       *sql.DB
 	analyzer Analyzer
 	domain   string
 	Chunker  *TextChunker
 	passes   *PassesRepository
+	entities *EntitiesRepository
 	tick     time.Duration
 	stop     chan struct{}
 }
@@ -55,7 +56,7 @@ func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration, domain s
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
-	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, Chunker: NewTextChunker(), passes: NewPassesRepository(db), tick: tick}
+	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, Chunker: NewTextChunker(), passes: NewPassesRepository(db), entities: NewEntitiesRepository(db), tick: tick}
 }
 
 // Start launches the analysis loop in a background goroutine.
@@ -149,8 +150,12 @@ func (m *FactsMachine) ProcessOnce(ctx context.Context) error {
 			}
 			continue
 		}
-		if _, err := m.passes.UpsertPass(id, m.domain, ch.Index, ch.Start, ch.End, ch.Text, HashContent(ch.Text), result); err != nil {
+		pass, err := m.passes.UpsertPass(id, m.domain, ch.Index, ch.Start, ch.End, ch.Text, HashContent(ch.Text), result)
+		if err != nil {
 			return err
+		}
+		if err := m.entities.ExtractPass(ctx, pass); err != nil {
+			log.Printf("entity extraction failed for link id=%d chunk %d: %v", id, ch.Index, err)
 		}
 	}
 
