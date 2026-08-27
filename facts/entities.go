@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,110 +22,6 @@ const (
 	// only merge with another Date entity, never with Person/Investor/etc.
 	dateType = "Date"
 )
-
-// ruEn transliterates Cyrillic lowercase letters to Latin. Mixed-case input is
-// lowercased before lookup, so only lowercase entries are needed.
-var ruEn = map[rune]string{
-	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e",
-	'ж': "zh", 'з': "z", 'и': "i", 'й': "i", 'к': "k", 'л': "l", 'м': "m",
-	'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
-	'ф': "f", 'х': "h", 'ц': "c", 'ч': "ch", 'ш': "sh", 'щ': "sch",
-	'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
-}
-
-// transliterate converts a string to a lowercase ASCII form, mapping Cyrillic
-// letters and keeping Latin letters/digits; every other rune is dropped.
-func transliterate(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if m, ok := ruEn[r]; ok {
-			b.WriteString(m)
-			continue
-		}
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// isWordRune reports whether r may belong to a name token (letter or digit);
-// punctuation/spaces/underscores are separators.
-func isWordRune(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-		(r >= '0' && r <= '9') || (r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я')
-}
-
-// canonKey produces a deterministic, order/case/punctuation-invariant key for a
-// name: split into word tokens, transliterate each, sort the tokens and join
-// with "_". This makes "Евгений Голанд" and "Голанд Евгений" collide, and also
-// aligns with the model's uppercase ids after lowercasing (GORIN_EVGENIY ->
-// evgeniy_gorin).
-func canonKey(s string) string {
-	fields := strings.FieldsFunc(s, func(r rune) bool { return !isWordRune(r) })
-	words := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if w := transliterate(f); w != "" {
-			words = append(words, w)
-		}
-	}
-	sort.Strings(words)
-	return strings.Join(words, "_")
-}
-
-// canonTokens returns the sorted, de-duplicated token set of a name's canonKey.
-func canonTokens(s string) []string {
-	parts := strings.Split(canonKey(s), "_")
-	out := make([]string, 0, len(parts))
-	seen := make(map[string]struct{})
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		out = append(out, p)
-	}
-	return out
-}
-
-// similarity scores how likely two names refer to the same entity. It is the
-// Jaccard index over canonKey token sets, with an abbreviation bonus: a token
-// like "p." (single letter + dot) is treated as matching any token starting
-// with that letter, so "Евгений П." matches "Евгений Петров".
-func similarity(a, b string) float64 {
-	ta := canonTokens(a)
-	tb := canonTokens(b)
-	if len(ta) == 0 && len(tb) == 0 {
-		return 0
-	}
-	setB := make(map[string]bool, len(tb))
-	for _, t := range tb {
-		setB[t] = true
-	}
-	inter := 0
-	for _, t := range ta {
-		if setB[t] {
-			inter++
-			continue
-		}
-		if len(t) == 2 && t[1] == '.' && t[0] >= 'a' && t[0] <= 'z' {
-			for _, u := range tb {
-				if strings.HasPrefix(u, t[0:1]) {
-					inter++
-					break
-				}
-			}
-		}
-	}
-	union := len(ta) + len(tb) - inter
-	if union <= 0 {
-		return 0
-	}
-	return float64(inter) / float64(union)
-}
 
 // typesCompatible reports whether two entities may be merged given their types.
 // The only exclusive type is Date: a Date entity may only merge with another
@@ -166,15 +61,15 @@ func allTypeIs(types []string, t string) bool {
 
 // Entity is the Go model for a canonical row in the entities table.
 type Entity struct {
-	ID            int
-	DisplayName   string
-	Types         []string
-	Properties    string // JSON array of property objects (all values kept)
-	Confidence    string
+	ID             int
+	DisplayName    string
+	Types          []string
+	Properties     string // JSON array of property objects (all values kept)
+	Confidence     string
 	PromotionScore int
-	IsKnown       bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	IsKnown        bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // EntitiesRepository provides entity/alias/mention operations and reconciliation.
@@ -236,6 +131,12 @@ func (r *EntitiesRepository) lookupAlias(alias string) (Entity, bool, error) {
 	}
 	e, err := r.GetEntity(id)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			// Alias points at an entity that was merged away or deleted: drop
+			// the dangling alias and treat it as not found.
+			_, _ = r.db.Exec("DELETE FROM entity_aliases WHERE alias = ?", alias)
+			return Entity{}, false, nil
+		}
 		return Entity{}, false, err
 	}
 	return e, true, nil
@@ -291,13 +192,17 @@ func (r *EntitiesRepository) createEntity(displayName string, types []string, pr
 	if len(props) > 0 {
 		propArr = mustJSON([]json.RawMessage{props})
 	}
-	_, err := r.db.Exec(
+	res, err := r.db.Exec(
 		"INSERT INTO entities (display_name, types, properties) VALUES (?, ?, ?)",
 		displayName, marshalTypes(types), propArr)
 	if err != nil {
 		return Entity{}, err
 	}
-	return r.GetEntity(mustLastInsertID(r.db))
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Entity{}, err
+	}
+	return r.GetEntity(int(id))
 }
 
 // mergeEntityData folds a newly seen mention (name, model id, properties, type)
@@ -388,6 +293,11 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 		seen[eid] = true
 		e, err := r.GetEntity(eid)
 		if err != nil {
+			// The FTS index can reference an entity that was merged away or
+			// deleted; skip the stale candidate instead of failing the pass.
+			if err == sql.ErrNoRows {
+				continue
+			}
 			return nil, err
 		}
 		out = append(out, fuzzyCandidate{Entity: e, Score: similarity(name, nm)})
@@ -587,6 +497,11 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 	if _, err := r.db.Exec("DELETE FROM entity_aliases WHERE entity_id = ?", loser.ID); err != nil {
 		return err
 	}
+	if r.ftsAvailable {
+		if _, err := r.db.Exec("DELETE FROM entity_fts WHERE entity_id = ?", loser.ID); err != nil {
+			return err
+		}
+	}
 	if _, err := r.db.Exec("INSERT OR IGNORE INTO entity_redirects (old_id, new_id) VALUES (?, ?)", loser.ID, survivor.ID); err != nil {
 		return err
 	}
@@ -732,14 +647,6 @@ func unionProperties(existing string, add json.RawMessage) string {
 func mustJSON(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
-}
-
-func mustLastInsertID(db *sql.DB) int {
-	var id int
-	if err := db.QueryRow("SELECT last_insert_rowid()").Scan(&id); err != nil {
-		log.Printf("last insert id: %v", err)
-	}
-	return id
 }
 
 func aliasSetsIntersect(a, b []string) bool {
