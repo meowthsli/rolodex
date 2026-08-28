@@ -115,15 +115,16 @@ func main() {
 
 	// Snapshot the queue before processing starts, for visibility.
 	links, err := repo.ListLinks()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("link_queue rows: %+v\n", links)
+	fmt.Printf("link_queue rows: %d\n", len(links))
 
 	// Scraper: every tick it picks the next unscraped link, fetches its page
 	// over HTTP, extracts readable text, stores it, and discovers new links.
 	scraper := grab.NewScraper(repo, &http.Client{}, 1*time.Second)
+	if bl, err := grab.LoadBlacklist("blacklist.txt"); err == nil {
+		scraper.SetBlacklist(bl)
+	} else if !os.IsNotExist(err) {
+		log.Printf("warning: could not load blacklist.txt: %v", err)
+	}
 	scraper.Start()
 	defer scraper.Stop()
 
@@ -169,11 +170,6 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
-	// Final snapshot of the queue after processing, for visibility.
 	links, err = repo.ListLinks()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("link_queue rows: %+v\n", links)
+	fmt.Printf("link_queue rows: %d\n", len(links))
 }

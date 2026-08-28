@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -15,7 +17,10 @@ type Scraper struct {
 	repo   *LinksRepository
 	client *http.Client
 	tick   time.Duration
-	stop   chan struct{}
+	// blacklist holds normalized URL prefixes. A link whose stored URL starts
+	// with any prefix is dropped before being fetched or stored.
+	blacklist []string
+	stop      chan struct{}
 	// done is closed by the run loop when it exits, so Stop can wait for the
 	// in-flight scrape to finish before the caller tears down the database.
 	done chan struct{}
@@ -31,6 +36,42 @@ func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) 
 		tick = 5 * time.Second
 	}
 	return &Scraper{repo: repo, client: client, tick: tick}
+}
+
+// SetBlacklist installs a list of banned URL prefixes. Entries should be
+// normalized (scheme-less) URLs; matching is done via string prefix against
+// each link's stored URL.
+func (s *Scraper) SetBlacklist(entries []string) {
+	s.blacklist = entries
+}
+
+// LoadBlacklist reads blacklist entries from a file (one prefix per line; blank
+// lines and lines starting with '#' are ignored) and returns them normalized
+// so they compare directly against the scheme-less URLs stored in link_queue.
+func LoadBlacklist(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, normalizeURL(line))
+	}
+	return out, nil
+}
+
+// isBlacklisted reports whether url starts with any installed blacklist prefix.
+func (s *Scraper) isBlacklisted(url string) bool {
+	for _, p := range s.blacklist {
+		if strings.HasPrefix(url, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Start launches the scraping loop in a background goroutine.
@@ -87,6 +128,16 @@ func (s *Scraper) scrapeOnce() error {
 		return nil
 	}
 
+	// Blacklist: a banned link is erased from the database immediately, before
+	// any fetch or content storage, so it is never processed or retried.
+	if s.isBlacklisted(link.URL) {
+		log.Printf("link id=%d url=%s is blacklisted; erasing from DB", link.ID, link.URL)
+		if err := s.repo.DeleteLink(link.ID); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	var resp *http.Response
 	var getErr error
 	chosenScheme := ""
@@ -128,24 +179,29 @@ func (s *Scraper) scrapeOnce() error {
 		return err
 	}
 
-	discovered, err := extractLinks(base, content)
-	if err != nil {
-		return err
-	}
-	added, skipped := 0, 0
-	for _, u := range discovered {
-		if _, err := s.repo.NewLink(u, link.Generation+1); err != nil {
-			if errors.Is(err, ErrLinkExists) {
-				skipped++
-				continue
-			}
+	if link.Generation <= 2 {
+		discovered, err := extractLinks(base, content)
+		if err != nil {
 			return err
 		}
-		added++
-	}
+		added, skipped := 0, 0
+		for _, u := range discovered {
+			if _, err := s.repo.NewLink(u, link.Generation+1); err != nil {
+				if errors.Is(err, ErrLinkExists) {
+					skipped++
+					continue
+				}
+				return err
+			}
+			added++
+		}
 
-	log.Printf("scraped link id=%d: content=%d bytes, readable=%d bytes, discovered=%d (new=%d, skipped=%d)",
-		link.ID, len(content), len(readable), len(discovered), added, skipped)
+		log.Printf("scraped link id=%d: content=%d bytes, readable=%d bytes, discovered=%d (new=%d, skipped=%d)",
+			link.ID, len(content), len(readable), len(discovered), added, skipped)
+	} else {
+		log.Printf("scraped link id=%d: content=%d bytes, readable=%d bytes (generation %d > 2, skipping link discovery)",
+			link.ID, len(content), len(readable), link.Generation)
+	}
 
 	return nil
 }

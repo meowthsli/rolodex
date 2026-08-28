@@ -173,6 +173,14 @@ func (r *LinksRepository) SaveScrapeResult(id int, content, readableText string)
 	return err
 }
 
+// DeleteLink removes a link_queue row entirely by id. Used to drop links that
+// are blacklisted before any content is fetched or stored.
+func (r *LinksRepository) DeleteLink(id int) error {
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM link_queue WHERE id = {}", id))
+	return err
+}
+
 // SaveScrapeError records a failure for the given link and stamps
 // last_scrapped_at so the link is not retried.
 func (r *LinksRepository) SaveScrapeError(id int, errMsg string) error {

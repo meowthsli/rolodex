@@ -1,6 +1,8 @@
 package grab
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -389,4 +391,56 @@ func TestScraperPropagatesGeneration(t *testing.T) {
 		}
 	}
 	t.Fatal("discovered link not found in queue")
+}
+
+// TestScraperBlacklist seeds a banned link and verifies the scraper erases it
+// from the database before fetching anything: no content is stored and the row
+// disappears entirely so it is never processed or retried.
+func TestScraperBlacklist(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "should never be fetched")
+	}))
+	defer server.Close()
+
+	banned, err := repo.NewLink(server.URL+"/banned", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+	// A normal link so the scraper has something else to do.
+	if _, err := repo.NewLink(server.URL+"/ok", 1); err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	host := strings.TrimPrefix(server.URL, "http://")
+	scraper.SetBlacklist([]string{host + "/banned"})
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce: %v", err)
+	}
+
+	// Banned link must be gone entirely.
+	if _, err := repo.GetLink(banned.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("banned link should be erased, GetLink err = %v", err)
+	}
+
+	// The non-banned link remains pending and untouched.
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	found := false
+	for _, l := range links {
+		if l.URL == host+"/ok" {
+			found = true
+			if l.LastScrappedAt.Valid {
+				t.Errorf("non-banned link should not be scraped by blacklist check")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("non-banned link missing from queue")
+	}
 }

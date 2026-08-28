@@ -1,0 +1,5 @@
+# Blacklist: one URL prefix per line. A link whose stored URL starts with any
+# prefix below is erased from the database before being fetched or stored.
+# Blank lines and lines starting with '#' are ignored. Prefixes are matched
+# without scheme (e.g. "example.com/spam" bans "http://example.com/spam/x").
+# example.com/ads
