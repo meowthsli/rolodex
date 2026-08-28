@@ -568,3 +568,45 @@ func TestScraperSkipsShortURL(t *testing.T) {
 		t.Fatalf("error = %q, want url too short (<6)", got.Error.String)
 	}
 }
+
+// TestScraperNoLinksDryRun seeds a page and verifies that with noLinks mode the
+// spider reports discovered links but does NOT insert them into link_queue.
+func TestScraperNoLinksDryRun(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<html><body>%s<a href="/page1">1</a><a href="/exit">short</a></body></html>`,
+			strings.Repeat("word ", 300))
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL+"/", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	scraper.SetNoLinks(true)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce: %v", err)
+	}
+
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	// Only the seed should remain; discovered /page1 must not be enqueued.
+	host := strings.TrimPrefix(server.URL, "http://")
+	for _, l := range links {
+		if l.ID == seed.ID {
+			continue
+		}
+		if l.URL == host+"/page1" {
+			t.Fatalf("discovered link %q should not be inserted in noLinks mode", l.URL)
+		}
+	}
+	if len(links) != 1 {
+		t.Fatalf("expected only the seed link in queue, got %d rows: %v", len(links), links)
+	}
+}

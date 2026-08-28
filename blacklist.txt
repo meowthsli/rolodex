@@ -3,5 +3,19 @@
 # Blank lines and lines starting with '#' are ignored. Prefixes are matched
 # without scheme (e.g. "example.com/spam" bans "http://example.com/spam/x").
 # example.com/ads
-zoom.cnews
+zoom.cnews.ru
 rsdn
+www.cnews.ru
+events.cnews.ru
+market.cnews.ru
+tv.cnews.ru
+cnews.ru/book/top
+advert.cnews.ru
+www.cnews.ru/about
+www.cnews.ru/redirect
+www.cnews.ru/analytics
+biz.cnews.ru
+telecom.cnews.ru
+internet.cnews.ru
+corp.cnews.ru
+importfree.cnews.ru

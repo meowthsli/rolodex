@@ -61,6 +61,9 @@ func main() {
 	// -sqlog enables SQ's query logger (SQL statements with timing) to stdout.
 	// Off by default to keep runtime output free of per-query noise.
 	sqLog := flag.Bool("sqlog", false, "log every SQL query (with timing) to stdout")
+	// -nolinks makes the scraper print discovered links to stdout instead of
+	// inserting them into link_queue (a dry-run mode).
+	noLinks := flag.Bool("nolinks", false, "print discovered links instead of inserting them into link_queue")
 	flag.Parse()
 
 	// Load credentials/endpoints from .env (KEY=VALUE) before anything else so
@@ -125,6 +128,9 @@ func main() {
 	// Scraper: every tick it picks the next unscraped link, fetches its page
 	// over HTTP, extracts readable text, stores it, and discovers new links.
 	scraper := grab.NewScraper(repo, &http.Client{}, 1*time.Second)
+	if *noLinks {
+		scraper.SetNoLinks(true)
+	}
 	if bl, err := grab.LoadBlacklist("blacklist.txt"); err == nil {
 		scraper.SetBlacklist(bl)
 	} else if !os.IsNotExist(err) {

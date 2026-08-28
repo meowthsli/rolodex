@@ -2,6 +2,7 @@ package grab
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -20,7 +21,10 @@ type Scraper struct {
 	// blacklist holds normalized URL prefixes. A link whose stored URL starts
 	// with any prefix is dropped before being fetched or stored.
 	blacklist []string
-	stop      chan struct{}
+	// noLinks, when set, makes the spider print discovered links to stdout
+	// instead of inserting them into link_queue (a dry-run mode).
+	noLinks bool
+	stop    chan struct{}
 	// done is closed by the run loop when it exits, so Stop can wait for the
 	// in-flight scrape to finish before the caller tears down the database.
 	done chan struct{}
@@ -40,6 +44,16 @@ func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) 
 		tick = 5 * time.Second
 	}
 	return &Scraper{repo: repo, client: client, tick: tick}
+}
+
+// SetBlacklist installs a list of banned URL prefixes. Entries should be
+// normalized (scheme-less) URLs; matching is done via string prefix against
+// each link's stored URL.
+
+// SetNoLinks enables dry-run mode: discovered links are printed to stdout
+// rather than inserted into link_queue.
+func (s *Scraper) SetNoLinks(on bool) {
+	s.noLinks = on
 }
 
 // SetBlacklist installs a list of banned URL prefixes. Entries should be
@@ -209,6 +223,13 @@ func (s *Scraper) scrapeOnce() error {
 			// Don't enqueue links that are too short to be real pages.
 			if len(normalizeURL(u)) < minURLLen {
 				skipped++
+				continue
+			}
+			if s.noLinks {
+				// Dry-run mode: report the discovered link instead of
+				// inserting it into link_queue.
+				fmt.Printf("discovered link: %s\n", u)
+				added++
 				continue
 			}
 			if _, err := s.repo.NewLink(u, link.Generation+1); err != nil {
