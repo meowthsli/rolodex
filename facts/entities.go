@@ -130,12 +130,6 @@ func NewEntitiesRepository(db *sql.DB) *EntitiesRepository {
 // driver was built without fts5 support, fuzzy matching is disabled and only
 // exact (alias) matching is used.
 func InitFTS(db *sql.DB) {
-	ensureFTS(db)
-}
-
-// ensureFTS attempts to create the FTS5 virtual table and records whether it
-// succeeded. It is the single probe run at app startup via InitFTS.
-func ensureFTS(db *sql.DB) {
 	_, err := sq.Exec(db, sq.SQLite.Queryf(
 		"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
 	if err != nil {
@@ -145,10 +139,6 @@ func ensureFTS(db *sql.DB) {
 	}
 	ftsAvailable = true
 }
-
-// FTSAvailable reports whether fuzzy (FTS5) matching is active. Exposed so tests
-// can skip fuzzy-dependent cases when built without -tags sqlite_fts5.
-func FTSAvailable() bool { return ftsAvailable }
 
 // GetEntity loads a single entity by id via the strict EntityMapper.
 func (r *EntitiesRepository) GetEntity(id int) (Entity, error) {
@@ -446,30 +436,34 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 	return r.syncFTS(e.ID)
 }
 
-// findMergePair scans the whole entities table for the first mergeable pair and
-// returns it, or nil when the graph is stable. Two entities merge when their
-// alias sets collide (exact) or when their display names are fuzzy-similar
-// above the threshold with compatible types. Pairwise comparison is used so the
-// global pass catches near-duplicates that the inline FTS5 phrase search may
-// miss (e.g. a one-token difference at the end of the name).
-func (r *EntitiesRepository) findMergePair() (*Entity, *Entity, error) {
-	ents, err := r.allEntities()
-	if err != nil {
-		return nil, nil, err
-	}
-	aliases := make(map[int][]string, len(ents))
+// findMergePair returns the first mergeable pair from an in-memory snapshot of
+// the graph, or nil when the graph is stable. It performs NO database access.
+// Two entities merge when their alias sets collide (exact) or when their display
+// names are fuzzy-similar above the threshold with compatible types. The alias
+// collision is detected via an inverted index (alias -> owners) in O(total
+// aliases) instead of an O(n^2) pairwise intersection; the fuzzy name comparison
+// stays pairwise because it must catch near-duplicates (e.g. a one-token
+// difference at the end of the name) that an exact-alias index would miss.
+func (r *EntitiesRepository) findMergePair(ents []Entity, aliases map[int][]string) (*Entity, *Entity, error) {
+	byID := make(map[int]*Entity, len(ents))
 	for i := range ents {
-		al, err := r.aliasesFor(ents[i].ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		aliases[ents[i].ID] = al
+		byID[ents[i].ID] = &ents[i]
 	}
+	// Exact alias collision via inverted index (deterministic, O(total aliases)).
+	seen := make(map[string]int)
+	for _, e := range ents {
+		for _, al := range aliases[e.ID] {
+			if owner, ok := seen[al]; ok && owner != e.ID {
+				return byID[owner], byID[e.ID], nil
+			}
+			if _, ok := seen[al]; !ok {
+				seen[al] = e.ID
+			}
+		}
+	}
+	// Fuzzy name similarity fallback (pairwise, in-memory).
 	for i := 0; i < len(ents); i++ {
 		for j := i + 1; j < len(ents); j++ {
-			if aliasSetsIntersect(aliases[ents[i].ID], aliases[ents[j].ID]) {
-				return &ents[i], &ents[j], nil
-			}
 			if similarity(ents[i].DisplayName, ents[j].DisplayName) >= fuzzyThreshold &&
 				typesCompatible(ents[i].Types, ents[j].Types) {
 				return &ents[i], &ents[j], nil
@@ -480,18 +474,53 @@ func (r *EntitiesRepository) findMergePair() (*Entity, *Entity, error) {
 }
 
 // GlobalReconcile repeatedly merges duplicate entities until the graph is
-// stable, returning the number of merges performed.
+// stable, returning the number of merges performed. The full graph is loaded
+// once into an in-memory snapshot; each merge updates that snapshot
+// incrementally (refreshing only the survivor's aliases with a single query)
+// instead of re-reading the entire entities table on every pass.
 func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
+	ents, err := r.allEntities()
+	if err != nil {
+		return 0, err
+	}
+	aliases, err := r.allAliases()
+	if err != nil {
+		return 0, err
+	}
 	total := 0
 	for {
-		a, b, err := r.findMergePair()
+		a, b, err := r.findMergePair(ents, aliases)
 		if err != nil {
 			return total, err
 		}
 		if a == nil || b == nil {
 			break
 		}
-		if _, err := r.reconcile(*a, *b); err != nil {
+		survivor, err := r.reconcile(*a, *b)
+		if err != nil {
+			return total, err
+		}
+		// The loser is whichever input was not chosen as the survivor.
+		loserID := a.ID
+		if survivor.ID == a.ID {
+			loserID = b.ID
+		}
+		// Update the snapshot in place: drop the loser and replace the
+		// survivor's entry with its post-merge value.
+		updated := make([]Entity, 0, len(ents))
+		for _, e := range ents {
+			if e.ID == loserID {
+				continue
+			}
+			if e.ID == survivor.ID {
+				updated = append(updated, survivor)
+				continue
+			}
+			updated = append(updated, e)
+		}
+		ents = updated
+		delete(aliases, loserID)
+		if aliases[survivor.ID], err = r.aliasesFor(survivor.ID); err != nil {
 			return total, err
 		}
 		total++
@@ -566,7 +595,12 @@ func (r *EntitiesRepository) reconcile(a, b Entity) (Entity, error) {
 		"DELETE FROM entities WHERE id = {}", loser.ID)); err != nil {
 		return Entity{}, err
 	}
-	return survivor, r.syncFTS(survivor.ID)
+	if err := r.syncFTS(survivor.ID); err != nil {
+		return Entity{}, err
+	}
+	// Return the fresh survivor so callers (GlobalReconcile's snapshot) get the
+	// updated fields rather than the pre-merge struct.
+	return r.GetEntity(survivor.ID)
 }
 
 func pickSurvivor(a, b Entity) (survivor, loser Entity) {
@@ -592,6 +626,31 @@ func (r *EntitiesRepository) allEntities() ([]Entity, error) {
 	return sq.FetchAll(r.db, sq.SQLite.Queryf("SELECT {*} FROM entities"), EntityMapper)
 }
 
+// allAliases loads every alias row in a single query and groups them by entity
+// id. It replaces the per-entity aliasesFor lookups that GlobalReconcile used to
+// issue on every pass.
+func (r *EntitiesRepository) allAliases() (map[int][]string, error) {
+	rows, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT entity_id, alias FROM entity_aliases"),
+		func(row *sq.Row) struct {
+			EntityID int
+			Alias    string
+		} {
+			return struct {
+				EntityID int
+				Alias    string
+			}{EntityID: row.Int("entity_id"), Alias: row.String("alias")}
+		})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int][]string, len(rows))
+	for _, rrow := range rows {
+		out[rrow.EntityID] = append(out[rrow.EntityID], rrow.Alias)
+	}
+	return out, nil
+}
+
 func (r *EntitiesRepository) aliasesFor(id int) ([]string, error) {
 	return sq.FetchAll(r.db, sq.SQLite.Queryf(
 		"SELECT alias FROM entity_aliases WHERE entity_id = {}", id),
@@ -614,5 +673,3 @@ type llmAnalysis struct {
 		} `json:"properties"`
 	} `json:"entities"`
 }
-
-
