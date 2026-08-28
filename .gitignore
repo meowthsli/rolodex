@@ -1,6 +1,6 @@
-rolodex
-add-content
-add-link
-reconcile
+# Built binaries (output of `make`, sources live under cmd/ and root main.go).
+/bin
+
+# Local data and secrets.
 rolodex.db
 .env

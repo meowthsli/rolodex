@@ -1,6 +1,6 @@
 # Build flags. sqlite_fts5 enables fuzzy entity matching in the reconcile tool.
 TAGS := sqlite_fts5
-BIN  := .
+BIN  := bin
 
 .PHONY: all build rolodex add-link add-content reconcile test vet clean
 
