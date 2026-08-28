@@ -137,7 +137,16 @@ func main() {
 	if llmURL == "" || llmKey == "" {
 		log.Fatal("llm_api_url and llm_api_key must be set (in .env or environment)")
 	}
-	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts")
+	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts",
+		facts.NewGoqiteEntityPublisher(db))
+
+	// Entity event handler: consume lifecycle events (create/merge) published by
+	// the facts machine and print each one. Cancelled on shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go facts.StartEntityEventHandler(ctx, db, func(ev facts.EntityEvent) {
+		log.Printf("entity event: id=%d name=%q", ev.ID, ev.Name)
+	})
 
 	if v := os.Getenv("llm_chunk_size"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

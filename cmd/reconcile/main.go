@@ -48,7 +48,7 @@ func main() {
 	})
 
 	passes := facts.NewPassesRepository(db)
-	entities := facts.NewEntitiesRepository(db)
+	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
 	ctx := context.Background()
 
 	backfilled, err := backfill(ctx, passes, entities)

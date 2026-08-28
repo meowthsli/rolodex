@@ -2,9 +2,13 @@ package facts
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
+
+	"maragu.dev/goqite"
 )
 
 // TestCreateEntityUnderPool reproduces the "sql: no rows in result set" failure
@@ -17,7 +21,7 @@ func TestCreateEntityUnderPool(t *testing.T) {
 	db := setupTestDB(t)
 	db.SetMaxOpenConns(8)
 
-	r := NewEntitiesRepository(db)
+	r := newTestRepo(t, db)
 	const n = 50
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -152,7 +156,7 @@ func TestExtractPassMergesNameVariants(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
-	repo := NewEntitiesRepository(db)
+	repo := newTestRepo(t, db)
 	ctx := context.Background()
 
 	p1, _ := passes.UpsertPass(linkID, "d", 0, 0, 5, "t", "h", `{"entities":[{"id":"GORLAND_EVGENIY","type":"Person","properties":{"name":"Евгений Голанд"}}]}`)
@@ -200,7 +204,7 @@ func TestExtractPassUnifiesTranslitAndDiminutive(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
-	repo := NewEntitiesRepository(db)
+	repo := newTestRepo(t, db)
 	ctx := context.Background()
 
 	// Aleksei (Cyrillic) and Alexey (Latin) for the same surname must merge.
@@ -243,7 +247,7 @@ func TestExtractionPromotesKnownAfterThreshold(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
-	repo := NewEntitiesRepository(db)
+	repo := newTestRepo(t, db)
 	ctx := context.Background()
 
 	const result = `{"entities":[{"id":"X1","type":"Startup","properties":{"name":"Одна И Та же Компания"}}]}`
@@ -281,7 +285,7 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
-	repo := NewEntitiesRepository(db)
+	repo := newTestRepo(t, db)
 	if !FTSAvailable() {
 		t.Skip("fts5 not compiled; build with -tags sqlite_fts5 to exercise fuzzy merge")
 	}
@@ -324,5 +328,81 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	}
 	if redirects < 1 {
 		t.Errorf("expected at least 1 redirect recorded, got %d", redirects)
+	}
+}
+
+// newTestRepo returns an EntitiesRepository wired to the real goqite publisher so
+// tests exercise the entity-event path instead of the no-op default.
+func newTestRepo(t *testing.T, db *sql.DB) *EntitiesRepository {
+	t.Helper()
+	r := NewEntitiesRepository(db, NewGoqiteEntityPublisher(db))
+	return r
+}
+
+// drainEntityEvents receives and returns every currently-queued entity event,
+// deleting each so the queue is left empty. It lets a test assert exactly what
+// was published.
+func drainEntityEvents(t *testing.T, db *sql.DB) []EntityEvent {
+	t.Helper()
+	q := goqite.New(goqite.NewOpts{DB: db, Name: entityQueue})
+	var out []EntityEvent
+	for {
+		m, err := q.Receive(context.Background())
+		if err != nil {
+			t.Fatalf("drain receive: %v", err)
+		}
+		if m == nil {
+			break
+		}
+		var ev EntityEvent
+		if err := json.Unmarshal(m.Body, &ev); err != nil {
+			t.Fatalf("drain decode: %v", err)
+		}
+		out = append(out, ev)
+		if err := q.Delete(context.Background(), m.ID); err != nil {
+			t.Fatalf("drain delete: %v", err)
+		}
+	}
+	return out
+}
+
+// TestEntityEventsPublished verifies that creating an entity and merging two
+// entities publishes the expected lifecycle events to the goqite queue using the
+// real publisher (not the no-op default): a creation event per new entity, and an
+// update event for the surviving entity after a merge.
+func TestEntityEventsPublished(t *testing.T) {
+	db := setupTestDB(t)
+	repo := newTestRepo(t, db)
+
+	e1, err := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, err := repo.createEntity("Alice Smith", []string{"Person"}, []byte(`{"name":"Alice Smith"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force a merge; the survivor keeps the longer display name.
+	survivor, err := repo.reconcile(e1, e2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := drainEntityEvents(t, db)
+	// Expect: created e1, created e2, updated survivor.
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
+	}
+	if events[0].ID != e1.ID || events[0].Name != "Alice" {
+		t.Errorf("event[0] = %+v, want id=%d name=Alice", events[0], e1.ID)
+	}
+	if events[1].ID != e2.ID || events[1].Name != "Alice Smith" {
+		t.Errorf("event[1] = %+v, want id=%d name=Alice Smith", events[1], e2.ID)
+	}
+	if events[2].ID != survivor.ID {
+		t.Errorf("event[2].ID = %d, want survivor %d", events[2].ID, survivor.ID)
+	}
+	if events[2].Name != survivor.DisplayName {
+		t.Errorf("event[2].Name = %q, want %q", events[2].Name, survivor.DisplayName)
 	}
 }

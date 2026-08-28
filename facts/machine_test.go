@@ -36,16 +36,30 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":["Apple"]}`}, 0, "facts")
+	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":[{"id":"APPLE","type":"Organization","properties":{"name":"Apple"}}]}`}, 0, "facts",
+		NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
+	}
+
+	// The single "Apple" entity extracted by the pass must be published as a
+	// lifecycle event through the real goqite publisher.
+	events := drainEntityEvents(t, db)
+	if len(events) < 1 {
+		t.Fatalf("expected at least 1 entity event, got %d", len(events))
+	}
+	if events[0].Name != "Apple" {
+		t.Errorf("event[0].Name = %q, want Apple", events[0].Name)
+	}
+	if events[0].ID == 0 {
+		t.Errorf("event[0].ID = 0, want a real entity id")
 	}
 
 	pass, err := repo.GetPassByLink(linkID, "facts", 0)
 	if err != nil {
 		t.Fatalf("get pass: %v", err)
 	}
-	if pass.Result != `{"entities":["Apple"]}` {
+	if pass.Result != `{"entities":[{"id":"APPLE","type":"Organization","properties":{"name":"Apple"}}]}` {
 		t.Errorf("stored result = %q", pass.Result)
 	}
 	if pass.ContentHash != HashContent("Apple acquired NeXT in 1996.") {
@@ -63,7 +77,7 @@ func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, 0, "facts")
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, 0, "test", NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -92,7 +106,7 @@ func TestProcessOnceSkipsNotScrapedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, 0, "facts")
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, 0, "facts", NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
 	}

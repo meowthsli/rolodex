@@ -16,6 +16,9 @@ type Scraper struct {
 	client *http.Client
 	tick   time.Duration
 	stop   chan struct{}
+	// done is closed by the run loop when it exits, so Stop can wait for the
+	// in-flight scrape to finish before the caller tears down the database.
+	done chan struct{}
 }
 
 // NewScraper builds a Scraper. A nil client defaults to http.DefaultClient,
@@ -34,18 +37,23 @@ func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) 
 func (s *Scraper) Start() {
 	log.Printf("scraper started (tick: %s)", s.tick)
 	s.stop = make(chan struct{})
+	s.done = make(chan struct{})
 	go s.run()
 }
 
-// Stop terminates the scraping loop.
+// Stop terminates the scraping loop and blocks until the run loop has fully
+// exited, so the caller can safely close the database afterwards without racing
+// an in-flight scrape.
 func (s *Scraper) Stop() {
 	if s.stop != nil {
 		close(s.stop)
+		<-s.done
 		s.stop = nil
 	}
 }
 
 func (s *Scraper) run() {
+	defer close(s.done)
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
 	for {
@@ -54,9 +62,17 @@ func (s *Scraper) run() {
 			log.Println("scraper stopped")
 			return
 		case <-ticker.C:
-			if err := s.scrapeOnce(); err != nil {
-				log.Printf("scrape error: %v", err)
-			}
+		}
+		// Re-check stop before scraping: the select above can pick a ticker tick
+		// even when stop is already closed (both ready), and we must not start a
+		// scrape during shutdown.
+		select {
+		case <-s.stop:
+			return
+		default:
+		}
+		if err := s.scrapeOnce(); err != nil {
+			log.Printf("scrape error: %v", err)
 		}
 	}
 }

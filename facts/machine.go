@@ -52,11 +52,14 @@ type FactsMachine struct {
 // NewFactsMachine builds a FactsMachine for the given domain. A non-positive
 // tick defaults to 5s. The Chunker defaults to sentence/paragraph-aware
 // splitting with the package's default size and overlap.
-func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration, domain string) *FactsMachine {
+func NewFactsMachine(db *sql.DB, analyzer Analyzer, tick time.Duration, domain string, p EntityEventPublisher) *FactsMachine {
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
-	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, Chunker: NewTextChunker(), passes: NewPassesRepository(db), entities: NewEntitiesRepository(db), tick: tick}
+	return &FactsMachine{db: db, analyzer: analyzer, domain: domain, Chunker: NewTextChunker(),
+		passes:   NewPassesRepository(db),
+		entities: NewEntitiesRepository(db, p),
+		tick:     tick}
 }
 
 // Start launches the analysis loop in a background goroutine.

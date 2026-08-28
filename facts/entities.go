@@ -115,13 +115,25 @@ var ftsAvailable bool
 // EntitiesRepository provides entity/alias/mention operations and reconciliation.
 type EntitiesRepository struct {
 	db *sql.DB
+	// pub broadcasts entity lifecycle events. Defaults to a no-op so the
+	// repository works without a configured queue; callers opt in via
+	// SetPublisher (e.g. the facts machine in production).
+	pub EntityEventPublisher
 }
 
 // NewEntitiesRepository creates a repository. The FTS5 availability check is not
 // performed here; it must be run exactly once at app start via InitFTS, so
 // constructing (or recreating) repositories never re-runs the probe.
-func NewEntitiesRepository(db *sql.DB) *EntitiesRepository {
-	return &EntitiesRepository{db: db}
+func NewEntitiesRepository(db *sql.DB, pub EntityEventPublisher) *EntitiesRepository {
+	return &EntitiesRepository{db: db, pub: pub}
+}
+
+// publishEvent emits an entity lifecycle event, logging (but never failing) if
+// the publisher errors.
+func (r *EntitiesRepository) publishEvent(id int, name string) {
+	if err := r.pub.PublishEntityEvent(id, name); err != nil {
+		log.Printf("publish entity event (id=%d): %v", id, err)
+	}
 }
 
 // InitFTS probes FTS5 support and provisions the full-text index. It must be
@@ -223,7 +235,13 @@ func (r *EntitiesRepository) createEntity(displayName string, types []string, pr
 	if err != nil {
 		return Entity{}, err
 	}
-	return r.GetEntity(int(res.LastInsertId))
+	e, err := r.GetEntity(int(res.LastInsertId))
+	if err != nil {
+		return Entity{}, err
+	}
+	// A brand-new entity is an entity lifecycle event.
+	r.publishEvent(e.ID, e.DisplayName)
+	return e, nil
 }
 
 // bumpPromotion records a new "founding" of the entity and auto-promotes it to
@@ -590,6 +608,9 @@ func (r *EntitiesRepository) reconcile(a, b Entity) (Entity, error) {
 	if err := r.syncFTS(survivor.ID); err != nil {
 		return Entity{}, err
 	}
+	// A merge is an entity update: broadcast the surviving entity (with its
+	// merged display name) so downstream consumers can react.
+	r.publishEvent(survivor.ID, display)
 	// Return the fresh survivor so callers (GlobalReconcile's snapshot) get the
 	// updated fields rather than the pre-merge struct.
 	return r.GetEntity(survivor.ID)
