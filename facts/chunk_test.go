@@ -287,3 +287,46 @@ func assertWholeSentences(t *testing.T, text string, chunks []Chunk, r []rune) {
 func isWordBoundary(r rune) bool {
 	return isSpace(r) || isSentenceTerminator(r)
 }
+
+// TestSplitSentencesKeepsAbbreviations verifies that dots ending common
+// abbreviations are not treated as sentence boundaries, while real sentence
+// terminators still split. Covers single-letter ("г."), multi-letter ("руб."),
+// and dotted abbreviations ("п.п.", "п. п.").
+func TestSplitSentencesKeepsAbbreviations(t *testing.T) {
+	text := "В 2020 г. компания заработала 100 руб. за товар. " +
+		"Новый этап начался. " +
+		"Показатель вырос на 5 п.п. Итог ясен. " +
+		"См. также п. п. выше."
+	r := []rune(text)
+	units := splitSentences(r)
+
+	var sentences []string
+	for _, u := range units {
+		sentences = append(sentences, strings.TrimSpace(string(r[u.start:u.end])))
+	}
+	// Expected 4 sentences: the abbreviation dots must NOT split them.
+	want := []string{
+		"В 2020 г. компания заработала 100 руб. за товар.",
+		"Новый этап начался.",
+		"Показатель вырос на 5 п.п. Итог ясен.",
+		"См. также п. п. выше.",
+	}
+	if len(sentences) != len(want) {
+		t.Fatalf("got %d sentences, want %d:\n%v", len(sentences), len(want), sentences)
+	}
+	for i := range want {
+		if sentences[i] != want[i] {
+			t.Errorf("sentence %d = %q, want %q", i, sentences[i], want[i])
+		}
+	}
+}
+
+// TestSplitSentencesRealTerminators verifies that normal multi-letter words
+// ending in a dot still end a sentence.
+func TestSplitSentencesRealTerminators(t *testing.T) {
+	r := []rune("Первое предложение. Второе предложение.")
+	units := splitSentences(r)
+	if len(units) != 2 {
+		t.Fatalf("expected 2 sentences, got %d", len(units))
+	}
+}

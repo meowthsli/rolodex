@@ -1,9 +1,36 @@
 package facts
 
+import (
+	"strings"
+	"unicode"
+)
+
 const (
 	DefaultChunkRunes   = 4000
 	DefaultOverlapRunes = 400
 )
+
+// abbrevTokens are multi-letter abbreviations whose trailing dot must NOT be
+// treated as a sentence boundary (e.g. "руб.", "тыс.", "млн.", "коп.").
+// Single-letter abbreviations ("г.", "п.", initials "В. А.") are handled
+// separately by isAbbreviationDot without needing to be listed here.
+var abbrevTokens = map[string]bool{
+	"руб":   true,
+	"тыс":   true,
+	"млн":   true,
+	"млрд":  true,
+	"коп":   true,
+	"см":    true,
+	"рис":   true,
+	"табл":  true,
+	"им":    true,
+	"проф":  true,
+	"доц":   true,
+	"акад":  true,
+	"др":    true,
+	"пр":    true,
+	"тов":   true,
+}
 
 // TextChunker splits a long readable text into overlapping, sentence/paragraph
 // aware chunks small enough to send to the LLM. Offsets are rune-based so they
@@ -121,6 +148,11 @@ func splitSentences(r []rune) []chunkUnit {
 	for i := 0; i < len(r); i++ {
 		c := r[i]
 		if isSentenceTerminator(c) {
+			// A dot ending an abbreviation (e.g. "г.", "руб.", "п.п.", "п. п.")
+			// is not a sentence boundary; keep scanning.
+			if c == '.' && isAbbreviationDot(r, i) {
+				continue
+			}
 			// Extend past any trailing whitespace so each sentence unit ends on
 			// the terminator (and the next unit starts on a real character),
 			// preventing a leading space from becoming part of the next
@@ -158,6 +190,39 @@ func isSpace(r rune) bool {
 func isSentenceTerminator(r rune) bool {
 	switch r {
 	case '.', '!', '?', '。', '！', '？':
+		return true
+	}
+	return false
+}
+
+// isAbbreviationDot reports whether the dot at r[i] ends an abbreviation rather
+// than a sentence. It returns true when the dot is adjacent to another dot
+// (ellipsis or dotted abbreviations like "п.п."), when the letter immediately
+// before it is a single letter ("г.", "п.", initials "В. А."), or when the word
+// before it is a known multi-letter abbreviation ("руб.", "тыс.", ...).
+func isAbbreviationDot(r []rune, i int) bool {
+	if i <= 0 {
+		return false
+	}
+	// Ellipsis or dotted abbreviations ("п.п.", "т.е."): a dot next to another
+	// dot is never a sentence terminator.
+	if r[i-1] == '.' || (i+1 < len(r) && r[i+1] == '.') {
+		return true
+	}
+	// Collect the letters immediately preceding the dot.
+	j := i - 1
+	for j >= 0 && unicode.IsLetter(r[j]) {
+		j--
+	}
+	token := string(r[j+1 : i])
+	if token == "" {
+		return false
+	}
+	if len([]rune(token)) == 1 {
+		// Single-letter abbreviation, e.g. "г.", "п.", or a name initial "В.".
+		return true
+	}
+	if abbrevTokens[strings.ToLower(token)] {
 		return true
 	}
 	return false
