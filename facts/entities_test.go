@@ -182,9 +182,9 @@ func TestExtractPassMergesNameVariants(t *testing.T) {
 	}
 
 	// Both spellings and the model id must resolve to the same entity.
-	e1, ok1, _ := repo.lookupAlias(canonKey("Евгений Голанд"))
-	e2, ok2, _ := repo.lookupAlias(canonKey("Голанд Евгений"))
-	e3, ok3, _ := repo.lookupAlias(canonKey("GORLAND_EVGENIY"))
+	e1, ok1, _ := repo.lookupAlias(canonKey("Евгений Голанд"), "")
+	e2, ok2, _ := repo.lookupAlias(canonKey("Голанд Евгений"), "")
+	e3, ok3, _ := repo.lookupAlias(canonKey("GORLAND_EVGENIY"), "")
 	if !ok1 || !ok2 || !ok3 {
 		t.Fatalf("expected all three forms to resolve: %v %v %v", ok1, ok2, ok3)
 	}
@@ -226,8 +226,8 @@ func TestExtractPassUnifiesTranslitAndDiminutive(t *testing.T) {
 
 	// Each pair of spellings must resolve to a single entity.
 	check := func(a, b string) {
-		ea, oka, _ := repo.lookupAlias(canonKey(a))
-		eb, okb, _ := repo.lookupAlias(canonKey(b))
+		ea, oka, _ := repo.lookupAlias(canonKey(a), "")
+		eb, okb, _ := repo.lookupAlias(canonKey(b), "")
 		if !oka || !okb {
 			t.Fatalf("expected both %q and %q to resolve: %v %v", a, b, oka, okb)
 		}
@@ -254,7 +254,7 @@ func TestExtractionPromotesKnownAfterThreshold(t *testing.T) {
 		}
 	}
 
-	e, ok, err := repo.lookupAlias(canonKey("Одна И Та же Компания"))
+	e, ok, err := repo.lookupAlias(canonKey("Одна И Та же Компания"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

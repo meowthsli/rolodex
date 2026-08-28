@@ -140,30 +140,29 @@ func InitFTS(db *sql.DB) {
 	ftsAvailable = true
 }
 
+// FTSAvailable reports whether fuzzy (FTS5) matching is active. Exposed so tests
+// can skip fuzzy-dependent cases when built without -tags sqlite_fts5.
+func FTSAvailable() bool { return ftsAvailable }
+
 // GetEntity loads a single entity by id via the strict EntityMapper.
 func (r *EntitiesRepository) GetEntity(id int) (Entity, error) {
 	return sq.FetchOne(r.db, sq.SQLite.Queryf(
 		"SELECT {*} FROM entities WHERE id = {}", id), EntityMapper)
 }
 
-// lookupAlias resolves a normalized alias to its canonical entity, if present.
-func (r *EntitiesRepository) lookupAlias(alias string) (Entity, bool, error) {
-	id, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
-		"SELECT entity_id FROM entity_aliases WHERE alias = {}", alias),
-		func(row *sq.Row) int { return row.Int("entity_id") })
+// lookupAlias resolves a canonical entity from up to two candidate alias keys
+// (e.g. the mention name and the model id), matching either of them in a single
+// joined query (the first key is preferred). It returns (entity, found). The
+// join also drops the need for a second lookup: the matching entity row is read
+// directly. A match that points at a deleted entity simply yields no row and is
+// treated as not found (loser aliases are already removed by reconcile).
+func (r *EntitiesRepository) lookupAlias(a, b string) (Entity, bool, error) {
+	e, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM entities e JOIN entity_aliases aa ON aa.entity_id = e.id "+
+			"WHERE aa.alias = {} OR aa.alias = {} ORDER BY aa.alias = {} DESC", a, b, a),
+		EntityMapper)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return Entity{}, false, nil
-		}
-		return Entity{}, false, err
-	}
-	e, err := r.GetEntity(id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// Alias points at an entity that was merged away or deleted: drop
-			// the dangling alias and treat it as not found.
-			_, _ = sq.Exec(r.db, sq.SQLite.Queryf(
-				"DELETE FROM entity_aliases WHERE alias = {}", alias))
 			return Entity{}, false, nil
 		}
 		return Entity{}, false, err
@@ -313,21 +312,14 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 }
 
 // resolveEntity decides whether a name refers to an existing entity. It first
-// tries exact alias matches (canonical key of the name and of the model id),
-// then falls back to fuzzy FTS5 matching above the threshold with a
-// type-compatibility gate. Returns (entity, found).
+// tries an exact alias match (canonical key of the name or of the model id, in a
+// single query), then falls back to fuzzy FTS5 matching above the threshold with
+// a type-compatibility gate. Returns (entity, found).
 func (r *EntitiesRepository) resolveEntity(name, modelID string, types []string) (Entity, bool, error) {
-	if e, ok, err := r.lookupAlias(canonKey(name)); err != nil {
+	if e, ok, err := r.lookupAlias(canonKey(name), canonKey(modelID)); err != nil {
 		return Entity{}, false, err
 	} else if ok {
 		return e, true, nil
-	}
-	if modelID != "" {
-		if e, ok, err := r.lookupAlias(canonKey(modelID)); err != nil {
-			return Entity{}, false, err
-		} else if ok {
-			return e, true, nil
-		}
 	}
 	if ftsAvailable {
 		cands, err := r.fuzzyCandidates(name)
