@@ -383,7 +383,7 @@ func TestEntityEventsPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Force a merge; the survivor keeps the longer display name.
-	survivor, err := repo.reconcile(e1, e2)
+	survivor, err := repo.reconcile(e1, e2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,3 +406,36 @@ func TestEntityEventsPublished(t *testing.T) {
 		t.Errorf("event[2].Name = %q, want %q", events[2].Name, survivor.DisplayName)
 	}
 }
+
+// TestMergeEntitiesForcesMaster verifies that MergeEntities keeps the master as
+// the survivor even when the slave would naturally win the survivor election
+// (here the slave is "known"), and that the slave row is deleted.
+func TestMergeEntitiesForcesMaster(t *testing.T) {
+	db := setupTestDB(t)
+	r := newTestRepo(t, db)
+
+	master, err := r.createEntity("Master Co", []string{"Organization"}, []byte(`{"name":"Master Co"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slave, err := r.createEntity("Slave Inc", []string{"Organization"}, []byte(`{"name":"Slave Inc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make the slave "known" so pickSurvivor would normally choose it.
+	if _, err := db.Exec("UPDATE entities SET is_known = 1 WHERE id = ?", slave.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	survivor, err := r.MergeEntities(master.ID, slave.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if survivor.ID != master.ID {
+		t.Fatalf("expected master %d to survive, got %d", master.ID, survivor.ID)
+	}
+	if _, err := r.GetEntity(slave.ID); err == nil {
+		t.Fatalf("slave %d should have been deleted", slave.ID)
+	}
+}
+

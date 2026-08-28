@@ -2,12 +2,12 @@
 TAGS := sqlite_fts5
 BIN  := bin
 
-.PHONY: all build rolodex add-link add-content reconcile clear-events test vet clean
+.PHONY: all build rolodex add-link add-content reconcile clear-events merge-entities test vet clean
 
 # Build everything.
 all: build
 
-build: rolodex add-link add-content reconcile clear-events
+build: rolodex add-link add-content reconcile clear-events merge-entities
 
 # Main rolodex service (scraper + facts machine).
 rolodex:
@@ -25,6 +25,9 @@ reconcile:
 
 clear-events:
 	go build -tags $(TAGS) -o $(BIN)/clear-events ./cmd/clear-events
+
+merge-entities:
+	go build -tags $(TAGS) -o $(BIN)/merge-entities ./cmd/merge-entities
 
 # Run the full test suite (FTS5 enabled).
 test:

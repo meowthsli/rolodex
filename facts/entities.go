@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -429,7 +430,7 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 				return err
 			}
 		}
-		e, err = r.reconcile(e, match)
+		e, err = r.reconcile(e, match, nil)
 		if err != nil {
 			return err
 		}
@@ -506,7 +507,7 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 		if a == nil || b == nil {
 			break
 		}
-		survivor, err := r.reconcile(*a, *b)
+		survivor, err := r.reconcile(*a, *b, nil)
 		if err != nil {
 			return total, err
 		}
@@ -539,13 +540,23 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 }
 
 // reconcile folds two entities into one. The survivor is chosen by pickSurvivor
-// (known > higher promotion > earlier created); their types, properties and
-// display name are unioned; the loser's mentions and aliases are redirected to
-// the survivor; a permanent redirect is recorded; and the loser is deleted. It
-// is the single merge operation used both when ingesting a new mention and
-// during GlobalReconcile. It returns the surviving entity.
-func (r *EntitiesRepository) reconcile(a, b Entity) (Entity, error) {
-	survivor, loser := pickSurvivor(a, b)
+// (known > higher promotion > earlier created) unless prefer is non-nil and
+// points at a.ID or b.ID, in which case that entity is forced to survive; their
+// types, properties and display name are unioned; the loser's mentions and
+// aliases are redirected to the survivor; a permanent redirect is recorded; and
+// the loser is deleted. It is the single merge operation used both when ingesting
+// a new mention and during GlobalReconcile. It returns the surviving entity.
+func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error) {
+	var survivor, loser Entity
+	if prefer != nil && (*prefer == a.ID || *prefer == b.ID) {
+		if *prefer == a.ID {
+			survivor, loser = a, b
+		} else {
+			survivor, loser = b, a
+		}
+	} else {
+		survivor, loser = pickSurvivor(a, b)
+	}
 
 	newTypes := unionStrings(survivor.Types, loser.Types)
 	newProps := unionProperties(survivor.Properties, json.RawMessage(loser.Properties))
@@ -614,6 +625,25 @@ func (r *EntitiesRepository) reconcile(a, b Entity) (Entity, error) {
 	// Return the fresh survivor so callers (GlobalReconcile's snapshot) get the
 	// updated fields rather than the pre-merge struct.
 	return r.GetEntity(survivor.ID)
+}
+
+// MergeEntities folds the slave entity into the master entity, forcing the
+// master to survive (regardless of known/promotion/created rules), and returns
+// the surviving (master) entity. Both ids must correspond to existing rows, or
+// an error is returned.
+func (r *EntitiesRepository) MergeEntities(masterID, slaveID int) (Entity, error) {
+	if masterID == slaveID {
+		return Entity{}, fmt.Errorf("master and slave are the same entity (%d)", masterID)
+	}
+	master, err := r.GetEntity(masterID)
+	if err != nil {
+		return Entity{}, fmt.Errorf("load master %d: %w", masterID, err)
+	}
+	slave, err := r.GetEntity(slaveID)
+	if err != nil {
+		return Entity{}, fmt.Errorf("load slave %d: %w", slaveID, err)
+	}
+	return r.reconcile(master, slave, &masterID)
 }
 
 func pickSurvivor(a, b Entity) (survivor, loser Entity) {
