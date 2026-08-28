@@ -33,6 +33,10 @@ func setupTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	// Provision the FTS5 index once for the test process, mirroring the app's
+	// single InitFTS call at startup.
+	InitFTS(db)
+
 	return db
 }
 

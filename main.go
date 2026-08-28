@@ -82,6 +82,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Probe FTS5 support once at app start. This provisions the full-text index
+	// used for fuzzy entity matching and records availability globally, so the
+	// check is never repeated when repositories are created or recreated.
+	facts.InitFTS(db)
+
 	// Install a query logger so every SQL statement (with timing) is printed to
 	// stdout. Args are hidden to avoid dumping raw content into the logs.
 	logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{

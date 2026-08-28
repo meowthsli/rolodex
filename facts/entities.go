@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	sq "github.com/bokwoon95/sq"
@@ -106,35 +107,54 @@ func EntityMapper(row *sq.Row) Entity {
 	return e
 }
 
+// ftsAvailable records whether the SQLite driver was built with FTS5 support.
+// It is determined once per process by ensureFTS and shared by every repository,
+// so the availability check runs a single time at app start.
+var (
+	ftsAvailable bool
+	ftsOnce      sync.Once
+)
+
 // EntitiesRepository provides entity/alias/mention operations and reconciliation.
 type EntitiesRepository struct {
-	db           *sql.DB
-	ftsAvailable bool
+	db *sql.DB
 }
 
-// NewEntitiesRepository creates a repository and attempts to provision the FTS5
-// virtual table used for fuzzy matching. If the driver was built without fts5
-// support, fuzzy matching is disabled and only exact (alias) matching is used.
+// NewEntitiesRepository creates a repository. The FTS5 availability check is not
+// performed here; it must be run exactly once at app start via InitFTS, so
+// constructing (or recreating) repositories never re-runs the probe.
 func NewEntitiesRepository(db *sql.DB) *EntitiesRepository {
-	r := &EntitiesRepository{db: db}
-	r.ensureFTS()
-	return r
+	return &EntitiesRepository{db: db}
 }
 
-func (r *EntitiesRepository) ensureFTS() {
-	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
-	if err != nil {
-		log.Printf("fts5 unavailable, fuzzy matching disabled: %v", err)
-		r.ftsAvailable = false
-		return
-	}
-	r.ftsAvailable = true
+// InitFTS provisions the FTS5 virtual table and records whether fuzzy matching
+// is available. It must be called once at app start, before any repository is
+// used. It runs at most once per process (via sync.Once), so repeated calls are
+// no-ops and recreating repositories never re-checks FTS5 support. If the driver
+// was built without fts5 support, fuzzy matching is disabled and only exact
+// (alias) matching is used.
+func InitFTS(db *sql.DB) {
+	ensureFTS(db)
+}
+
+// ensureFTS performs the actual FTS5 probe and is guarded by sync.Once so the
+// work happens a single time per process.
+func ensureFTS(db *sql.DB) {
+	ftsOnce.Do(func() {
+		_, err := sq.Exec(db, sq.SQLite.Queryf(
+			"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
+		if err != nil {
+			log.Printf("fts5 unavailable, fuzzy matching disabled: %v", err)
+			ftsAvailable = false
+			return
+		}
+		ftsAvailable = true
+	})
 }
 
 // FTSAvailable reports whether fuzzy (FTS5) matching is active. Exposed so tests
 // can skip fuzzy-dependent cases when built without -tags sqlite_fts5.
-func (r *EntitiesRepository) FTSAvailable() bool { return r.ftsAvailable }
+func FTSAvailable() bool { return ftsAvailable }
 
 // GetEntity loads a single entity by id via the strict EntityMapper.
 func (r *EntitiesRepository) GetEntity(id int) (Entity, error) {
@@ -255,7 +275,7 @@ func (r *EntitiesRepository) bumpPromotion(id int) error {
 // syncFTS refreshes the FTS5 index for an entity from its display name and all
 // registered aliases. It is a no-op when FTS5 is unavailable.
 func (r *EntitiesRepository) syncFTS(entityID int) error {
-	if !r.ftsAvailable {
+	if !ftsAvailable {
 		return nil
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
@@ -287,7 +307,7 @@ type fuzzyCandidate struct {
 // fuzzyCandidates returns existing entities whose names are trigram-similar to
 // the given name, scored by similarity. Empty when FTS5 is unavailable.
 func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, error) {
-	if !r.ftsAvailable {
+	if !ftsAvailable {
 		return nil, nil
 	}
 	q := "\"" + strings.ReplaceAll(name, "\"", "") + "\""
@@ -343,7 +363,7 @@ func (r *EntitiesRepository) resolveEntity(name, modelID string, types []string)
 			return e, true, nil
 		}
 	}
-	if r.ftsAvailable {
+	if ftsAvailable {
 		cands, err := r.fuzzyCandidates(name)
 		if err != nil {
 			return Entity{}, false, err
@@ -526,7 +546,7 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 		"DELETE FROM entity_aliases WHERE entity_id = {}", loser.ID)); err != nil {
 		return err
 	}
-	if r.ftsAvailable {
+	if ftsAvailable {
 		if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 			"DELETE FROM entity_fts WHERE entity_id = {}", loser.ID)); err != nil {
 			return err
@@ -589,78 +609,4 @@ type llmAnalysis struct {
 	} `json:"entities"`
 }
 
-// --- JSON helpers ---
 
-func marshalTypes(t []string) string {
-	if len(t) == 0 {
-		return "[]"
-	}
-	b, _ := json.Marshal(t)
-	return string(b)
-}
-
-func unmarshalTypes(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var t []string
-	_ = json.Unmarshal([]byte(s), &t)
-	return t
-}
-
-func unionStrings(a, b []string) []string {
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(a)+len(b))
-	for _, x := range append(append([]string{}, a...), b...) {
-		if x == "" {
-			continue
-		}
-		k := strings.ToLower(x)
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		out = append(out, x)
-	}
-	return out
-}
-
-// unionProperties concatenates two JSON arrays of property objects, dropping
-// duplicate entries so all distinct values are preserved.
-func unionProperties(existing string, add json.RawMessage) string {
-	var a, b []json.RawMessage
-	_ = json.Unmarshal([]byte(existing), &a)
-	_ = json.Unmarshal(add, &b)
-	seen := make(map[string]struct{})
-	for _, x := range a {
-		seen[string(x)] = struct{}{}
-	}
-	for _, x := range b {
-		k := string(x)
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		a = append(a, x)
-	}
-	out, _ := json.Marshal(a)
-	return string(out)
-}
-
-func mustJSON(v interface{}) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-func aliasSetsIntersect(a, b []string) bool {
-	set := make(map[string]struct{}, len(a))
-	for _, x := range a {
-		set[x] = struct{}{}
-	}
-	for _, x := range b {
-		if _, ok := set[x]; ok {
-			return true
-		}
-	}
-	return false
-}

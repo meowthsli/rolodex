@@ -282,7 +282,7 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
 	repo := NewEntitiesRepository(db)
-	if !repo.FTSAvailable() {
+	if !FTSAvailable() {
 		t.Skip("fts5 not compiled; build with -tags sqlite_fts5 to exercise fuzzy merge")
 	}
 	ctx := context.Background()
