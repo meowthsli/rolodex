@@ -444,3 +444,40 @@ func TestScraperBlacklist(t *testing.T) {
 		t.Fatal("non-banned link missing from queue")
 	}
 }
+
+// TestScraperSkipsSmallContent seeds a link whose page is under 1KB and
+// verifies the scraper records an error and stores no content, so tiny pages
+// are neither persisted nor retried.
+func TestScraperSkipsSmallContent(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "tiny")
+	}))
+	defer server.Close()
+
+	small, err := repo.NewLink(server.URL+"/small", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce: %v", err)
+	}
+
+	got, err := repo.GetLink(small.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if !got.LastScrappedAt.Valid {
+		t.Fatal("small-content link should be marked scraped")
+	}
+	if got.Error.String != "content too small (<1KB)" {
+		t.Fatalf("error = %q, want content too small (<1KB)", got.Error.String)
+	}
+	if got.Content != "" {
+		t.Errorf("content should not be stored, got %d bytes", len(got.Content))
+	}
+}

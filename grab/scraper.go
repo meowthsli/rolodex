@@ -166,6 +166,15 @@ func (s *Scraper) scrapeOnce() error {
 
 	content := string(body)
 
+	// Too small to be useful: don't store content (and don't spider it). Mark
+	// the link with an error so it is not re-fetched or analyzed.
+	const minContentBytes = 1024
+	if len(content) < minContentBytes {
+		log.Printf("scraped link id=%d: content %d bytes < %d; skipping storage",
+			link.ID, len(content), minContentBytes)
+		return s.repo.SaveScrapeError(link.ID, "content too small (<1KB)")
+	}
+
 	// Spider: extract readable text and discover links, then persist once.
 	base := chosenScheme + "://" + link.URL
 	readable := ""
