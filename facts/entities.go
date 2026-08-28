@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	sq "github.com/bokwoon95/sq"
@@ -108,12 +107,10 @@ func EntityMapper(row *sq.Row) Entity {
 }
 
 // ftsAvailable records whether the SQLite driver was built with FTS5 support.
-// It is determined once per process by ensureFTS and shared by every repository,
-// so the availability check runs a single time at app start.
-var (
-	ftsAvailable bool
-	ftsOnce      sync.Once
-)
+// It is set by the FTS5 probe in ensureFTS, which is run once at app start via
+// InitFTS; repositories never re-run it, so recreating a repository never
+// repeats the check.
+var ftsAvailable bool
 
 // EntitiesRepository provides entity/alias/mention operations and reconciliation.
 type EntitiesRepository struct {
@@ -127,29 +124,26 @@ func NewEntitiesRepository(db *sql.DB) *EntitiesRepository {
 	return &EntitiesRepository{db: db}
 }
 
-// InitFTS provisions the FTS5 virtual table and records whether fuzzy matching
-// is available. It must be called once at app start, before any repository is
-// used. It runs at most once per process (via sync.Once), so repeated calls are
-// no-ops and recreating repositories never re-checks FTS5 support. If the driver
-// was built without fts5 support, fuzzy matching is disabled and only exact
-// (alias) matching is used.
+// InitFTS probes FTS5 support and provisions the full-text index. It must be
+// called exactly once at app start (before any repository is used). Recreating
+// repositories never calls it again, so no FTS check is made on reuse. If the
+// driver was built without fts5 support, fuzzy matching is disabled and only
+// exact (alias) matching is used.
 func InitFTS(db *sql.DB) {
 	ensureFTS(db)
 }
 
-// ensureFTS performs the actual FTS5 probe and is guarded by sync.Once so the
-// work happens a single time per process.
+// ensureFTS attempts to create the FTS5 virtual table and records whether it
+// succeeded. It is the single probe run at app startup via InitFTS.
 func ensureFTS(db *sql.DB) {
-	ftsOnce.Do(func() {
-		_, err := sq.Exec(db, sq.SQLite.Queryf(
-			"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
-		if err != nil {
-			log.Printf("fts5 unavailable, fuzzy matching disabled: %v", err)
-			ftsAvailable = false
-			return
-		}
-		ftsAvailable = true
-	})
+	_, err := sq.Exec(db, sq.SQLite.Queryf(
+		"CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(entity_id, name, tokenize='trigram')"))
+	if err != nil {
+		log.Printf("fts5 unavailable, fuzzy matching disabled: %v", err)
+		ftsAvailable = false
+		return
+	}
+	ftsAvailable = true
 }
 
 // FTSAvailable reports whether fuzzy (FTS5) matching is active. Exposed so tests
@@ -241,24 +235,6 @@ func (r *EntitiesRepository) createEntity(displayName string, types []string, pr
 		return Entity{}, err
 	}
 	return r.GetEntity(int(res.LastInsertId))
-}
-
-// mergeEntityData folds a newly seen mention (name, model id, properties, type)
-// into an existing entity: unions types and property objects, upgrades the
-// display name to the longest variant, and persists the row.
-func (r *EntitiesRepository) mergeEntityData(e Entity, name, modelID string, props json.RawMessage, types []string) (Entity, error) {
-	newTypes := unionStrings(e.Types, types)
-	newProps := unionProperties(e.Properties, props)
-	display := e.DisplayName
-	if name != "" && len(name) > len(display) {
-		display = name
-	}
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"UPDATE entities SET display_name = {}, types = {}, properties = {}, updated_at = CURRENT_TIMESTAMP WHERE id = {}",
-		display, marshalTypes(newTypes), newProps, e.ID)); err != nil {
-		return e, err
-	}
-	return r.GetEntity(e.ID)
 }
 
 // bumpPromotion records a new "founding" of the entity and auto-promotes it to
@@ -410,23 +386,54 @@ func (r *EntitiesRepository) markExtracted(passID int) {
 }
 
 // resolveAndMerge is the single entry point for folding one mention into the
-// graph: resolve to an existing entity (or create one), merge its data, register
-// aliases, record the mention, bump promotion, and refresh the FTS index.
+// graph. It always inserts a fresh entity for the mention (the "new" side),
+// records its mention and aliases, then runs the standard reconciliation against
+// any existing entity that matches (alias collision or fuzzy, type-compatible
+// name). If a match is found the two are folded together via reconcile; the new
+// entity may become the survivor or the loser. If no match exists the new entity
+// stands on its own. This makes the per-mention path use the exact same merge
+// operation as GlobalReconcile.
 func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.RawMessage, types []string, passID, linkID, chunk int) error {
-	e, found, err := r.resolveEntity(name, modelID, types)
+	// Always create the entity for this mention first.
+	e, err := r.createEntity(name, types, props)
 	if err != nil {
 		return err
 	}
-	if !found {
-		e, err = r.createEntity(name, types, props)
+	if err := r.addMention(e.ID, passID, linkID, chunk); err != nil {
+		return err
+	}
+	if err := r.bumpPromotion(e.ID); err != nil {
+		return err
+	}
+	// Re-read so the in-memory promotion score / known flag reflect the bump
+	// above; reconcile folds the loser's promotion into the survivor, so the
+	// value must be current.
+	if e, err = r.GetEntity(e.ID); err != nil {
+		return err
+	}
+	// Find an existing entity to merge with. The new entity has no aliases or
+	// FTS entry yet, so resolveEntity can only match pre-existing entities
+	// (never the row we just inserted).
+	match, found, err := r.resolveEntity(name, modelID, types)
+	if err != nil {
+		return err
+	}
+	if found {
+		// Register the mention's names as aliases on the new entity so that
+		// reconcile carries them over to the survivor.
+		if err := r.upsertAlias(e.ID, canonKey(name), name); err != nil {
+			return err
+		}
+		if modelID != "" {
+			if err := r.upsertAlias(e.ID, canonKey(modelID), modelID); err != nil {
+				return err
+			}
+		}
+		e, err = r.reconcile(e, match)
 		if err != nil {
 			return err
 		}
-	} else {
-		e, err = r.mergeEntityData(e, name, modelID, props, types)
-		if err != nil {
-			return err
-		}
+		return nil
 	}
 	if err := r.upsertAlias(e.ID, canonKey(name), name); err != nil {
 		return err
@@ -435,12 +442,6 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 		if err := r.upsertAlias(e.ID, canonKey(modelID), modelID); err != nil {
 			return err
 		}
-	}
-	if err := r.bumpPromotion(e.ID); err != nil {
-		return err
-	}
-	if err := r.addMention(e.ID, passID, linkID, chunk); err != nil {
-		return err
 	}
 	return r.syncFTS(e.ID)
 }
@@ -490,7 +491,7 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 		if a == nil || b == nil {
 			break
 		}
-		if err := r.mergeEntities(*a, *b); err != nil {
+		if _, err := r.reconcile(*a, *b); err != nil {
 			return total, err
 		}
 		total++
@@ -498,10 +499,13 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// mergeEntities folds b into the chosen survivor (known > higher promotion >
-// earlier created), preserving all aliases, mentions, properties and types, and
-// records the redirect for a future relation-reconcile step.
-func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
+// reconcile folds two entities into one. The survivor is chosen by pickSurvivor
+// (known > higher promotion > earlier created); their types, properties and
+// display name are unioned; the loser's mentions and aliases are redirected to
+// the survivor; a permanent redirect is recorded; and the loser is deleted. It
+// is the single merge operation used both when ingesting a new mention and
+// during GlobalReconcile. It returns the surviving entity.
+func (r *EntitiesRepository) reconcile(a, b Entity) (Entity, error) {
 	survivor, loser := pickSurvivor(a, b)
 
 	newTypes := unionStrings(survivor.Types, loser.Types)
@@ -515,19 +519,19 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"UPDATE OR IGNORE entity_mentions SET entity_id = {} WHERE entity_id = {}",
 		survivor.ID, loser.ID)); err != nil {
-		return err
+		return Entity{}, err
 	}
 	loserAliases, err := r.aliasesFor(loser.ID)
 	if err != nil {
-		return err
+		return Entity{}, err
 	}
 	for _, al := range loserAliases {
 		raw, rerr := r.rawNameForAlias(al)
 		if rerr != nil {
-			return rerr
+			return Entity{}, rerr
 		}
 		if err := r.upsertAlias(survivor.ID, al, raw); err != nil {
-			return err
+			return Entity{}, err
 		}
 	}
 
@@ -536,31 +540,33 @@ func (r *EntitiesRepository) mergeEntities(a, b Entity) error {
 		loserKnown = 1
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"UPDATE entities SET display_name = {}, types = {}, properties = {}, promotion_score = promotion_score + {}, "+
-			"is_known = CASE WHEN is_known = 1 OR {} = 1 THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE id = {}",
-		display, marshalTypes(newTypes), newProps, loser.PromotionScore, loserKnown, survivor.ID)); err != nil {
-		return err
+		"UPDATE entities SET display_name = {}, types = {}, properties = {}, "+
+			"promotion_score = promotion_score + {}, "+
+			"is_known = CASE WHEN is_known = 1 OR {} = 1 OR promotion_score + {} >= {} THEN 1 ELSE 0 END, "+
+			"updated_at = CURRENT_TIMESTAMP WHERE id = {}",
+		display, marshalTypes(newTypes), newProps, loser.PromotionScore, loserKnown, loser.PromotionScore, promotionThreshold, survivor.ID)); err != nil {
+		return Entity{}, err
 	}
 
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"DELETE FROM entity_aliases WHERE entity_id = {}", loser.ID)); err != nil {
-		return err
+		return Entity{}, err
 	}
 	if ftsAvailable {
 		if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 			"DELETE FROM entity_fts WHERE entity_id = {}", loser.ID)); err != nil {
-			return err
+			return Entity{}, err
 		}
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"INSERT OR IGNORE INTO entity_redirects (old_id, new_id) VALUES ({}, {})", loser.ID, survivor.ID)); err != nil {
-		return err
+		return Entity{}, err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"DELETE FROM entities WHERE id = {}", loser.ID)); err != nil {
-		return err
+		return Entity{}, err
 	}
-	return r.syncFTS(survivor.ID)
+	return survivor, r.syncFTS(survivor.ID)
 }
 
 func pickSurvivor(a, b Entity) (survivor, loser Entity) {
