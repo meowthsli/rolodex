@@ -3,3 +3,5 @@
 # Blank lines and lines starting with '#' are ignored. Prefixes are matched
 # without scheme (e.g. "example.com/spam" bans "http://example.com/spam/x").
 # example.com/ads
+zoom.cnews
+rsdn

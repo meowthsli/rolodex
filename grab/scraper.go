@@ -26,6 +26,10 @@ type Scraper struct {
 	done chan struct{}
 }
 
+// minURLLen is the shortest a stored (scheme-less) URL may be to be considered a
+// real, fetchable page. Shorter links are neither fetched nor extracted.
+const minURLLen = 6
+
 // NewScraper builds a Scraper. A nil client defaults to http.DefaultClient,
 // and a non-positive tick defaults to 5 seconds.
 func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) *Scraper {
@@ -138,6 +142,13 @@ func (s *Scraper) scrapeOnce() error {
 		return nil
 	}
 
+	// Too short to be a real page URL: don't fetch it, just record an error so
+	// it is not retried.
+	if len(link.URL) < minURLLen {
+		log.Printf("link id=%d url=%s is too short (<%d); recording error", link.ID, link.URL, minURLLen)
+		return s.repo.SaveScrapeError(link.ID, "url too short (<6)")
+	}
+
 	var resp *http.Response
 	var getErr error
 	chosenScheme := ""
@@ -195,6 +206,11 @@ func (s *Scraper) scrapeOnce() error {
 		}
 		added, skipped := 0, 0
 		for _, u := range discovered {
+			// Don't enqueue links that are too short to be real pages.
+			if len(normalizeURL(u)) < minURLLen {
+				skipped++
+				continue
+			}
 			if _, err := s.repo.NewLink(u, link.Generation+1); err != nil {
 				if errors.Is(err, ErrLinkExists) {
 					skipped++

@@ -22,7 +22,7 @@ func TestScraper(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "content for %s", r.URL.Path)
+		fmt.Fprintf(w, "content for %s\n%s", r.URL.Path, strings.Repeat("lorem ipsum ", 200))
 	}))
 	defer server.Close()
 
@@ -74,8 +74,8 @@ func TestScraper(t *testing.T) {
 			t.Errorf("link %d was not scraped", l.ID)
 		}
 		want := "content for " + paths[i]
-		if l.Content != want {
-			t.Errorf("link %d content mismatch:\n got %q\nwant %q", l.ID, l.Content, want)
+		if !strings.HasPrefix(l.Content, want) {
+			t.Errorf("link %d content mismatch:\n got %q\nwant prefix %q", l.ID, l.Content, want)
 		}
 	}
 }
@@ -107,7 +107,7 @@ func TestScraperRecordsError(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "content for %s", r.URL.Path)
+		fmt.Fprintf(w, "content for %s\n%s", r.URL.Path, strings.Repeat("lorem ipsum ", 200))
 	}))
 	defer server.Close()
 
@@ -204,9 +204,9 @@ func TestScraperSavesReadableText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<html><head><title>T</title></head><body>
 			<nav>menu menu menu</nav>
-			<article><p>This is the meaningful readable paragraph.</p></article>
+			<article><p>This is the meaningful readable paragraph.</p>%s</article>
 			<script>var x = 1;</script>
-		</body></html>`)
+		</body></html>`, strings.Repeat("lorem ipsum ", 200))
 	}))
 	defer server.Close()
 
@@ -250,14 +250,14 @@ func TestScraperSavesReadableText(t *testing.T) {
 func TestExtractLinks(t *testing.T) {
 	base := "http://example.com/dir/page"
 	htmlBody := `<html><body>
-		<a href="/a">a</a>
-		<a href="b">b</a>
+		<a href="/apage">a</a>
+		<a href="bbpage">b</a>
 		<a href="https://x.com/y">x</a>
 		<a href="//other.com/z">proto</a>
 		<a href="mailto:foo@bar.com">mail</a>
 		<a href="javascript:void(0)">js</a>
 		<iframe src="/frame"></iframe>
-		<a href="/a">dup</a>
+		<a href="/apage">dup</a>
 	</body></html>`
 
 	got, err := extractLinks(base, htmlBody)
@@ -265,8 +265,8 @@ func TestExtractLinks(t *testing.T) {
 		t.Fatalf("extractLinks: %v", err)
 	}
 	want := []string{
-		"http://example.com/a",
-		"http://example.com/dir/b",
+		"http://example.com/apage",
+		"http://example.com/dir/bbpage",
 		"https://x.com/y",
 		"http://other.com/z",
 		"http://example.com/frame",
@@ -284,13 +284,13 @@ func TestScraperDiscoversLinks(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `<html><body>
+		fmt.Fprintf(w, `<html><body>%s
 			<a href="/page1">1</a>
-			<a href="page2">2</a>
+			<a href="page2crawl">2</a>
 			<a href nonexistent>ignore</a>
 			<a href="mailto:foo@bar.com">m</a>
 			<a href="#frag">f</a>
-		</body></html>`)
+		</body></html>`, strings.Repeat("word ", 300))
 	}))
 	defer server.Close()
 
@@ -331,11 +331,69 @@ func TestScraperDiscoversLinks(t *testing.T) {
 	for _, want := range []string{
 		host,
 		host + "/page1",
-		host + "/page2",
+		host + "/page2crawl",
 	} {
 		if !got[want] {
 			t.Errorf("expected discovered link %q in queue, got %v", want, links)
 		}
+	}
+}
+
+// TestScraperSkipsShortDiscoveredLinks seeds a page whose HTML links to a
+// too-short URL and verifies the spider never enqueues it as a new link.
+func TestScraperSkipsShortDiscoveredLinks(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Pad well past the 1KB content threshold so link discovery runs.
+		pad := strings.Repeat("word ", 300)
+		fmt.Fprintf(w, `<html><body>%s<a href="http://a.co">short</a><a href="/page1">ok</a></body></html>`, pad)
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL+"/", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, 20*time.Millisecond)
+	scraper.Start()
+	defer scraper.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lk, err := repo.GetLink(seed.ID)
+		if err == nil && lk.LastScrappedAt.Valid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for seed scrape")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	scraper.Stop()
+
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	host := strings.TrimPrefix(server.URL, "http://")
+	for _, l := range links {
+		if l.URL == "a.co" {
+			t.Fatalf("too-short discovered link %q should not be enqueued", l.URL)
+		}
+	}
+	// The valid link must still be present.
+	found := false
+	for _, l := range links {
+		if l.URL == host+"/page1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("valid discovered link missing from queue")
 	}
 }
 
@@ -347,7 +405,7 @@ func TestScraperPropagatesGeneration(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `<html><body><a href="/page1">1</a></body></html>`)
+		fmt.Fprintf(w, `<html><body>%s<a href="/page1">1</a></body></html>`, strings.Repeat("lorem ipsum ", 200))
 	}))
 	defer server.Close()
 
@@ -401,7 +459,7 @@ func TestScraperBlacklist(t *testing.T) {
 	repo := NewLinksRepository(db)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "should never be fetched")
+		fmt.Fprintf(w, "should never be fetched %s", strings.Repeat("lorem ipsum ", 200))
 	}))
 	defer server.Close()
 
@@ -479,5 +537,34 @@ func TestScraperSkipsSmallContent(t *testing.T) {
 	}
 	if got.Content != "" {
 		t.Errorf("content should not be stored, got %d bytes", len(got.Content))
+	}
+}
+
+// TestScraperSkipsShortURL seeds a link whose stored URL is under 6 characters
+// and verifies the scraper records an error and never fetches the page.
+func TestScraperSkipsShortURL(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	// No server: a fetch must never happen for a too-short URL.
+	short, err := repo.NewLink("a.co", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce: %v", err)
+	}
+
+	got, err := repo.GetLink(short.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if !got.LastScrappedAt.Valid {
+		t.Fatal("short-url link should be marked scraped")
+	}
+	if got.Error.String != "url too short (<6)" {
+		t.Fatalf("error = %q, want url too short (<6)", got.Error.String)
 	}
 }

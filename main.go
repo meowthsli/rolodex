@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"flag"
 	"strconv"
 	"strings"
 	"syscall"
@@ -57,6 +58,11 @@ func loadEnvFile(path string) error {
 }
 
 func main() {
+	// -sqlog enables SQ's query logger (SQL statements with timing) to stdout.
+	// Off by default to keep runtime output free of per-query noise.
+	sqLog := flag.Bool("sqlog", false, "log every SQL query (with timing) to stdout")
+	flag.Parse()
+
 	// Load credentials/endpoints from .env (KEY=VALUE) before anything else so
 	// the values are available for configuring the analyzer below.
 	if err := loadEnvFile(".env"); err != nil {
@@ -87,19 +93,18 @@ func main() {
 	// check is never repeated when repositories are created or recreated.
 	facts.InitFTS(db)
 
-	// Install a query logger so every SQL statement (with timing) is printed to
-	// stdout. Args are hidden to avoid dumping raw content into the logs.
-	logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{
-		ShowTimeTaken: true,
-		HideArgs:      true,
-	})
-	sq.SetDefaultLogQuery(func(ctx context.Context, queryStats sq.QueryStats) {
-		// You can choose to only log queries if they encountered an error.
-		// if queryStats.Err == nil {
-		//     return
-		// }
-		logger.SqLogQuery(ctx, queryStats)
-	})
+	// Install a query logger (only when -sqlog is set) so every SQL statement
+	// with timing is printed to stdout. Args are hidden to avoid dumping raw
+	// content into the logs.
+	if *sqLog {
+		logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{
+			ShowTimeTaken: true,
+			HideArgs:      true,
+		})
+		sq.SetDefaultLogQuery(func(ctx context.Context, queryStats sq.QueryStats) {
+			logger.SqLogQuery(ctx, queryStats)
+		})
+	}
 
 	// The link repository owns the scraped-content table (link_queue) and is
 	// shared by both the scraper and the analysis pipeline below.
