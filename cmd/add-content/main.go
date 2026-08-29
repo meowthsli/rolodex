@@ -32,7 +32,7 @@ func main() {
 		log.Fatalf("read file %q: %v", path, err)
 	}
 
-	db, err := sql.Open("sqlite3", "rolodex.db")
+	db, err := sql.Open("sqlite3", "rolodex.db?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}

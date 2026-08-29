@@ -28,7 +28,7 @@ func main() {
 	sqlog := flag.Bool("sqlog", false, "print SQL query logs (with timing) to stdout")
 	flag.Parse()
 
-	db, err := sql.Open("sqlite3", "rolodex.db")
+	db, err := sql.Open("sqlite3", "rolodex.db?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -54,6 +54,7 @@ func main() {
 			logger.SqLogQuery(ctx, queryStats)
 		})
 	}
+	facts.InitFTS(db)
 
 	passes := facts.NewPassesRepository(db)
 	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
@@ -91,8 +92,15 @@ func backfill(ctx context.Context, passes *facts.PassesRepository, entities *fac
 		return 0, err
 	}
 	for _, p := range unextracted {
-		if err := entities.ExtractPass(ctx, p); err != nil {
-			log.Printf("extract pass id=%d: %v", p.ID, err)
+		// Phase one: fold every entity from the pass into the canonical graph.
+		if err := entities.ExtractPassEntities(ctx, p); err != nil {
+			log.Printf("extract entities pass id=%d: %v", p.ID, err)
+			continue
+		}
+		// Phase two: wire up relations now that all entities for this pass are
+		// committed, so each relation resolves to a real entity.
+		if err := entities.ExtractPassRelations(ctx, p); err != nil {
+			log.Printf("extract relations pass id=%d: %v", p.ID, err)
 			continue
 		}
 	}

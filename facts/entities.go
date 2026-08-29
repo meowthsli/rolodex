@@ -238,7 +238,7 @@ func (r *EntitiesRepository) upsertAlias(entityID int, alias, rawName string) er
 	if alias == "" {
 		return nil
 	}
-	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+	_, err := sq.Exec(sq.Log(r.db), sq.SQLite.Queryf(
 		"INSERT OR IGNORE INTO entity_aliases (entity_id, alias, raw_name) VALUES ({}, {}, {})",
 		entityID, alias, rawName))
 	return err
@@ -249,14 +249,6 @@ func (r *EntitiesRepository) addMention(entityID, passID, linkID, chunk int) err
 		"INSERT OR IGNORE INTO entity_mentions (entity_id, pass_id, link_id, chunk_index) VALUES ({}, {}, {}, {})",
 		entityID, passID, linkID, chunk))
 	return err
-}
-
-func (r *EntitiesRepository) entityTypes(id int) ([]string, error) {
-	e, err := r.GetEntity(id)
-	if err != nil {
-		return nil, err
-	}
-	return e.Types, nil
 }
 
 func (r *EntitiesRepository) entityNames(id int) ([]string, error) {
@@ -405,12 +397,23 @@ func (r *EntitiesRepository) resolveEntity(name, modelID string, types []string)
 	return Entity{}, false, nil
 }
 
-// ExtractPass parses a single pass result, merges every entity it contains into
-// the canonical graph, and marks the pass extracted (idempotent). Parse failures
-// are treated as "nothing to extract" so the pass is not retried endlessly.
+// ExtractPass runs both phases for a single pass: it first folds every entity
+// into the canonical graph (ExtractPassEntities) and then wires up the
+// relations between them (ExtractPassRelations), marking the pass extracted
+// once relations are done. Callers that need finer control (e.g. reconcile's
+// backfill) may run the two phases separately.
 func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
-	defer r.markExtracted(p.ID)
+	if err := r.ExtractPassEntities(ctx, p); err != nil {
+		return err
+	}
+	return r.ExtractPassRelations(ctx, p)
+}
 
+// ExtractPassEntities is phase one: it parses a single pass result and merges
+// every entity it mentions into the canonical graph. It does NOT touch
+// relations and does NOT mark the pass extracted, so relations (phase two) can
+// be processed in a separate step once all entities for the pass are committed.
+func (r *EntitiesRepository) ExtractPassEntities(ctx context.Context, p Pass) error {
 	var res llmAnalysis
 	if err := json.Unmarshal([]byte(p.Result), &res); err != nil {
 		return nil
@@ -429,10 +432,24 @@ func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
 			return err
 		}
 	}
-	// Entities are fully resolved (and their canonical aliases registered)
-	// before relations are processed, so a relation's source/target id resolves
-	// to the correct canonical entity whether it was just created or already
-	// existed from an earlier pass.
+	return nil
+}
+
+// ExtractPassRelations is phase two: it parses the same pass result and creates
+// a relation for every relation it declares, resolving the source/target names
+// to their canonical entities. Because phase one has already committed all
+// entities for this pass, every relation's endpoints resolve to an entity that
+// actually exists (either just created or carried over from an earlier pass).
+// The pass is marked extracted only after relations are processed, so a
+// re-run that fails mid-way replays the whole pass rather than leaving it
+// half-wired. Parse failures are treated as "nothing to extract".
+func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) error {
+	defer r.markExtracted(p.ID)
+
+	var res llmAnalysis
+	if err := json.Unmarshal([]byte(p.Result), &res); err != nil {
+		return nil
+	}
 	for _, rel := range res.Relations {
 		if rel.Source == "" || rel.Target == "" || rel.Type == "" {
 			continue
@@ -465,10 +482,17 @@ func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
 // publishes an entity lifecycle event for each endpoint so downstream consumers
 // learn that the entity's knowledge graph changed.
 func (r *EntitiesRepository) insertRelation(sourceID, targetID int, relType, propsJSON, conf string, passID, linkID, chunk int) error {
+	// Guard against duplicate relations: the relations phase may be replayed
+	// (e.g. after a partial failure), so only insert when no relation with the
+	// same endpoint pair, type and originating pass already exists.
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"INSERT INTO relations (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
-			"VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
-		sourceID, targetID, relType, propsJSON, conf, passID, linkID, chunk)); err != nil {
+			"SELECT {}, {}, {}, {}, {}, {}, {}, {} "+
+			"WHERE NOT EXISTS ("+
+			"SELECT 1 FROM relations "+
+			"WHERE pass_id = {} AND source_id = {} AND target_id = {} AND type = {})",
+		sourceID, targetID, relType, propsJSON, conf, passID, linkID, chunk,
+		passID, sourceID, targetID, relType)); err != nil {
 		return err
 	}
 	// Emit an entity event for both endpoints: the relation edits their graph.
@@ -497,7 +521,16 @@ func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 			return err
 		}
 	}
-	log.Println("reset: deleting entities (cascades aliases, mentions, relations)")
+	log.Println("reset: deleting entities (cascades aliases, mentions, relations, queue)")
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_mentions")); err != nil {
+		return err
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM goqite")); err != nil {
+		return err
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_aliases")); err != nil {
+		return err
+	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entities")); err != nil {
 		return err
 	}
@@ -739,7 +772,7 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error)
 		return Entity{}, err
 	}
 
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+	if _, err := sq.Exec(sq.Log(r.db), sq.SQLite.Queryf(
 		"DELETE FROM entity_aliases WHERE entity_id = {}", loser.ID)); err != nil {
 		return Entity{}, err
 	}
@@ -853,9 +886,9 @@ type llmAnalysis struct {
 		} `json:"properties"`
 	} `json:"entities"`
 	Relations []struct {
-		Source string `json:"source"`
-		Target string `json:"target"`
-		Type   string `json:"type"`
+		Source     string `json:"source"`
+		Target     string `json:"target"`
+		Type       string `json:"type"`
 		Properties struct {
 			Details    string `json:"details"`
 			ExactQuote string `json:"exact_quote"`

@@ -28,7 +28,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("migrate up: %v", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

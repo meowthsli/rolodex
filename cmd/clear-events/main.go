@@ -22,7 +22,7 @@ func main() {
 	dbPath := flag.String("db", "rolodex.db", "path to the sqlite database")
 	flag.Parse()
 
-	db, err := sql.Open("sqlite3", *dbPath)
+	db, err := sql.Open("sqlite3", *dbPath+"?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}

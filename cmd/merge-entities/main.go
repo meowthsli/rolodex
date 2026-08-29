@@ -30,7 +30,7 @@ func main() {
 		log.Fatal("usage: merge-entities -master <id> -slave <id> [-db rolodex.db]")
 	}
 
-	db, err := sql.Open("sqlite3", *dbPath)
+	db, err := sql.Open("sqlite3", *dbPath+"?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}

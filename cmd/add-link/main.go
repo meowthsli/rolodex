@@ -23,7 +23,7 @@ func main() {
 	}
 	rawURL := os.Args[1]
 
-	db, err := sql.Open("sqlite3", "rolodex.db")
+	db, err := sql.Open("sqlite3", "rolodex.db?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}

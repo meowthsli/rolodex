@@ -85,7 +85,7 @@ func main() {
 
 	// Open the (now migrated) database handle. Only the go-sqlite3 driver is
 	// used, per project conventions.
-	db, err := sql.Open("sqlite3", "rolodex.db")
+	db, err := sql.Open("sqlite3", "rolodex.db?_foreign_keys=on")
 	if err != nil {
 		log.Fatal(err)
 	}
