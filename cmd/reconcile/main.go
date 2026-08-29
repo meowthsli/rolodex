@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
+	"flag"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/bokwoon95/sq"
 	"github.com/golang-migrate/migrate/v4"
@@ -17,8 +21,12 @@ import (
 
 // reconcile extracts entities from every not-yet-processed pass (backfill) and
 // then runs the global entity merge until the canonical graph is stable. It can
-// be run repeatedly and is safe to re-run.
+// be run repeatedly and is safe to re-run. With -reset it first drops the whole
+// graph and unmarks passes, rebuilding everything from the stored pass results.
 func main() {
+	reset := flag.Bool("reset", false, "drop all entities/relations and re-extract every pass")
+	flag.Parse()
+
 	db, err := sql.Open("sqlite3", "rolodex.db")
 	if err != nil {
 		log.Fatal(err)
@@ -50,6 +58,18 @@ func main() {
 	passes := facts.NewPassesRepository(db)
 	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
 	ctx := context.Background()
+
+	if *reset {
+		fmt.Print("This will DROP all entities, relations and unmark every pass for re-extraction.\nType 'yes' to continue: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if strings.TrimSpace(line) != "yes" {
+			log.Fatal("aborted: reset not confirmed")
+		}
+		log.Println("reset confirmed; clearing graph")
+		if err := entities.ResetGraph(ctx); err != nil {
+			log.Fatalf("reset graph: %v", err)
+		}
+	}
 
 	backfilled, err := backfill(ctx, passes, entities)
 	if err != nil {

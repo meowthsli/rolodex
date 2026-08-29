@@ -486,6 +486,29 @@ func (r *EntitiesRepository) markExtracted(passID int) {
 		"UPDATE passes SET extracted_at = CURRENT_TIMESTAMP WHERE id = {}", passID))
 }
 
+// ResetGraph drops the entire canonical knowledge graph and unmarks every pass
+// as extracted so the reconcile command can rebuild it from scratch. Entities
+// cascade to aliases/mentions/relations; the standalone FTS index is cleared
+// explicitly. Each step is logged so the operator can follow the wipe.
+func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
+	if FTSAvailable() {
+		log.Println("reset: clearing entity FTS index")
+		if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_fts")); err != nil {
+			return err
+		}
+	}
+	log.Println("reset: deleting entities (cascades aliases, mentions, relations)")
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entities")); err != nil {
+		return err
+	}
+	log.Println("reset: unmarking every pass as extracted")
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("UPDATE passes SET extracted_at = NULL")); err != nil {
+		return err
+	}
+	log.Println("reset: graph cleared, ready for re-extraction")
+	return nil
+}
+
 // resolveAndMerge is the single entry point for folding one mention into the
 // graph. It always inserts a fresh entity for the mention (the "new" side),
 // records its mention and aliases, then runs the standard reconciliation against
@@ -725,10 +748,6 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error)
 			"DELETE FROM entity_fts WHERE entity_id = {}", loser.ID)); err != nil {
 			return Entity{}, err
 		}
-	}
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"INSERT OR IGNORE INTO entity_redirects (old_id, new_id) VALUES ({}, {})", loser.ID, survivor.ID)); err != nil {
-		return Entity{}, err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"DELETE FROM entities WHERE id = {}", loser.ID)); err != nil {

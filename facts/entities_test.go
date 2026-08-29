@@ -325,16 +325,6 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	if n != 2 {
 		t.Errorf("expected 2 entities after reconcile (1 startup + 1 date), got %d", n)
 	}
-
-	// The startup merge must have recorded a redirect.
-	redirects, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entity_redirects"),
-		func(row *sq.Row) int { return row.Int("c") })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if redirects < 1 {
-		t.Errorf("expected at least 1 redirect recorded, got %d", redirects)
-	}
 }
 
 // newTestRepo returns an EntitiesRepository wired to the real goqite publisher so

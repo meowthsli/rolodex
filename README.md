@@ -1,8 +1,9 @@
 # Rolodex
 
 A scraper + facts machine that crawls links, extracts readable text, and builds a
-canonical entity graph (people, organizations, dates, …) from the content via an
-LLM. State lives in a single SQLite database (`rolodex.db`); schema is managed by
+canonical knowledge graph — entities (people, organizations, dates, …) and the
+relations between them (founded, invested, employed-at, …) — from the content via
+an LLM. State lives in a single SQLite database (`rolodex.db`); schema is managed by
 the migrations under `./migrations`.
 
 Build everything (outputs go to `bin/`):
@@ -20,7 +21,8 @@ database is initialized automatically the first time any of them runs.
 
 ### rolodex
 The long-running service: scrapes pending links, feeds readable text to the LLM
-for entity extraction, reconciles entities, and publishes entity lifecycle events.
+for entity and relation extraction, reconciles entities (and redirects their
+relations onto the survivor), and publishes entity lifecycle events.
 
 Flags:
 - `-sqlog` — log every SQL query (with timing) to stdout. Off by default.
@@ -50,10 +52,14 @@ Usage: `add-content <file>`
   the `readable_text`. A random suffix is added to the URL so each run is distinct.
 
 ### reconcile
-Backfill entity extraction for every not-yet-processed pass and then merge
-duplicate entities until the graph is stable. Safe to re-run.
+Backfill entity and relation extraction for every not-yet-processed pass and then
+merge duplicate entities until the graph is stable. Safe to re-run.
 
-Usage: `reconcile` (no flags)
+Usage: `reconcile [-reset]`
+- `-reset` — **destructive**: drops the entire knowledge graph (entities, their
+  aliases/mentions/relations and the FTS index) and unmarks every pass as
+  extracted, then rebuilds everything from the stored pass results. It asks for
+  `yes` confirmation on stdin before wiping anything.
 - Logs every SQL query to stdout. Publishes entity lifecycle events to the goqite
   queue (requires `rolodex.db` to be migrated).
 
