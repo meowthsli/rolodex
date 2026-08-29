@@ -25,6 +25,7 @@ import (
 // graph and unmarks passes, rebuilding everything from the stored pass results.
 func main() {
 	reset := flag.Bool("reset", false, "drop all entities/relations and re-extract every pass")
+	sqlog := flag.Bool("sqlog", false, "print SQL query logs (with timing) to stdout")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite3", "rolodex.db")
@@ -41,19 +42,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Install a query logger so every SQL statement (with timing) is printed to
-	// stdout. Args are hidden to avoid dumping raw content into the logs.
-	logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{
-		ShowTimeTaken: true,
-		HideArgs:      true,
-	})
-	sq.SetDefaultLogQuery(func(ctx context.Context, queryStats sq.QueryStats) {
-		// You can choose to only log queries if they encountered an error.
-		// if queryStats.Err == nil {
-		//     return
-		// }
-		logger.SqLogQuery(ctx, queryStats)
-	})
+	// Install a query logger only when -sqlog is passed, so SQL statements (with
+	// timing) are printed to stdout. Args are hidden to avoid dumping raw content
+	// into the logs. Without the flag, queries are not logged.
+	if *sqlog {
+		logger := sq.NewLogger(os.Stdout, "", log.LstdFlags, sq.LoggerConfig{
+			ShowTimeTaken: true,
+			HideArgs:      true,
+		})
+		sq.SetDefaultLogQuery(func(ctx context.Context, queryStats sq.QueryStats) {
+			logger.SqLogQuery(ctx, queryStats)
+		})
+	}
 
 	passes := facts.NewPassesRepository(db)
 	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
