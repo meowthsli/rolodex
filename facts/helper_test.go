@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	sq "github.com/bokwoon95/sq"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/golang-migrate/migrate/v4"
@@ -45,11 +46,11 @@ func setupTestDB(t *testing.T) *sql.DB {
 func insertLink(t *testing.T, db *sql.DB) int {
 	t.Helper()
 
-	if _, err := db.Exec("INSERT INTO link_queue (url) VALUES (?)", "https://example.com/"+t.Name()); err != nil {
+	if _, err := sq.Exec(db, sq.SQLite.Queryf("INSERT INTO link_queue (url) VALUES ({})", "https://example.com/"+t.Name())); err != nil {
 		t.Fatalf("insert link: %v", err)
 	}
-	var id int
-	if err := db.QueryRow("SELECT last_insert_rowid()").Scan(&id); err != nil {
+	id, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT last_insert_rowid() AS id"), func(row *sq.Row) int { return row.Int("id") })
+	if err != nil {
 		t.Fatalf("last insert id: %v", err)
 	}
 	return id

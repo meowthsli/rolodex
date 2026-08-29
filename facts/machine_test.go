@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	sq "github.com/bokwoon95/sq"
 )
 
 // TestMockAnalyzerReturnsProgrammed verifies the mock ignores its input and
@@ -31,8 +33,9 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 	repo := NewPassesRepository(db)
 	linkID := insertLink(t, db)
 
-	if _, err := db.Exec("UPDATE link_queue SET readable_text = ?, last_scrapped_at = CURRENT_TIMESTAMP WHERE id = ?",
-		"Apple acquired NeXT in 1996.", linkID); err != nil {
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"UPDATE link_queue SET readable_text = {}, last_scrapped_at = CURRENT_TIMESTAMP WHERE id = {}",
+		"Apple acquired NeXT in 1996.", linkID)); err != nil {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
@@ -72,8 +75,9 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
-	if _, err := db.Exec("UPDATE link_queue SET readable_text = ?, last_scrapped_at = CURRENT_TIMESTAMP WHERE id = ?",
-		"some text", linkID); err != nil {
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"UPDATE link_queue SET readable_text = {}, last_scrapped_at = CURRENT_TIMESTAMP WHERE id = {}",
+		"some text", linkID)); err != nil {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
@@ -85,8 +89,9 @@ func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM passes WHERE link_queue_id = ?", linkID).Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM passes WHERE link_queue_id = {}", linkID),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {
@@ -101,8 +106,9 @@ func TestProcessOnceSkipsNotScrapedLink(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	// readable_text present, but last_scrapped_at still NULL => not yet scraped.
-	if _, err := db.Exec("UPDATE link_queue SET readable_text = ? WHERE id = ?",
-		"some text", linkID); err != nil {
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"UPDATE link_queue SET readable_text = {} WHERE id = {}",
+		"some text", linkID)); err != nil {
 		t.Fatalf("set readable_text: %v", err)
 	}
 

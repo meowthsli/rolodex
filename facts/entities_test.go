@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	sq "github.com/bokwoon95/sq"
 	"maragu.dev/goqite"
 )
 
@@ -169,16 +170,18 @@ func TestExtractPassMergesNameVariants(t *testing.T) {
 		t.Fatalf("ExtractPass 2: %v", err)
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entities"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("expected 1 canonical entity, got %d", n)
 	}
 
-	var mentions int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entity_mentions").Scan(&mentions); err != nil {
+	mentions, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entity_mentions"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatal(err)
 	}
 	if mentions != 2 {
@@ -220,8 +223,9 @@ func TestExtractPassUnifiesTranslitAndDiminutive(t *testing.T) {
 		}
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entities"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 2 {
@@ -312,8 +316,9 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 		t.Errorf("expected at least 1 fuzzy merge, got %d", merged)
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entities"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatal(err)
 	}
 	// One startup survivor + one Date entity = 2.
@@ -322,8 +327,9 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	}
 
 	// The startup merge must have recorded a redirect.
-	var redirects int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entity_redirects").Scan(&redirects); err != nil {
+	redirects, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM entity_redirects"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatal(err)
 	}
 	if redirects < 1 {
@@ -423,7 +429,7 @@ func TestMergeEntitiesForcesMaster(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Make the slave "known" so pickSurvivor would normally choose it.
-	if _, err := db.Exec("UPDATE entities SET is_known = 1 WHERE id = ?", slave.ID); err != nil {
+	if _, err := sq.Exec(db, sq.SQLite.Queryf("UPDATE entities SET is_known = 1 WHERE id = {}", slave.ID)); err != nil {
 		t.Fatal(err)
 	}
 

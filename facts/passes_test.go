@@ -3,6 +3,8 @@ package facts
 import (
 	"database/sql"
 	"testing"
+
+	sq "github.com/bokwoon95/sq"
 )
 
 // TestUpsertPassStoresResultAndHash verifies that a pass is created with the
@@ -50,8 +52,9 @@ func TestUpsertPassOverwritesSameLink(t *testing.T) {
 		t.Errorf("result not refreshed: %q", second.Result)
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM passes WHERE link_queue_id = ? AND domain = ?", linkID, "facts").Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM passes WHERE link_queue_id = {} AND domain = {}", linkID, "facts"),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 1 {
@@ -88,8 +91,9 @@ func TestUpsertPassSeparatesDomains(t *testing.T) {
 		t.Errorf("entities result = %q", entitiesPass.Result)
 	}
 
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM passes WHERE link_queue_id = ?", linkID).Scan(&n); err != nil {
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM passes WHERE link_queue_id = {}", linkID),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 2 {

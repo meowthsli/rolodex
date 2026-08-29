@@ -78,6 +78,57 @@ type ENTITIES struct {
 
 var EN = sq.New[ENTITIES]("e")
 
+// RELATIONS describes the relations table: directed edges between two canonical
+// entities extracted from a pass. One row per asserted relation; duplicates are
+// kept (no uniqueness constraint) so re-extraction stays idempotent and every
+// occurrence is preserved as provenance.
+type RELATIONS struct {
+	sq.TableStruct
+	ID         sq.NumberField `sq:"id"`
+	SourceID   sq.NumberField `sq:"source_id"`
+	TargetID   sq.NumberField `sq:"target_id"`
+	Type       sq.StringField `sq:"type"`
+	Properties sq.StringField `sq:"properties"`
+	Confidence sq.StringField `sq:"confidence"`
+	PassID     sq.NumberField `sq:"pass_id"`
+	LinkID     sq.NumberField `sq:"link_id"`
+	ChunkIndex sq.NumberField `sq:"chunk_index"`
+	CreatedAt  sq.TimeField   `sq:"created_at"`
+}
+
+var RN = sq.New[RELATIONS]("r")
+
+// Relation is the Go model for a row in the relations table.
+type Relation struct {
+	ID         int
+	SourceID   int
+	TargetID   int
+	Type       string
+	Properties string // JSON object of relation attributes (details/quote/amount/when)
+	Confidence string
+	PassID     int
+	LinkID     int
+	ChunkIndex int
+	CreatedAt  time.Time
+}
+
+// RelationMapper scans a row from the relations table into a Relation. It is the
+// single strict mapper used whenever a relation row is loaded.
+func RelationMapper(row *sq.Row) Relation {
+	var r Relation
+	r.ID = row.Int("id")
+	r.SourceID = row.Int("source_id")
+	r.TargetID = row.Int("target_id")
+	r.Type = row.String("type")
+	r.Properties = row.String("properties")
+	r.Confidence = row.String("confidence")
+	r.PassID = row.Int("pass_id")
+	r.LinkID = row.Int("link_id")
+	r.ChunkIndex = row.Int("chunk_index")
+	r.CreatedAt = row.Time("created_at")
+	return r
+}
+
 // Entity is the Go model for a canonical row in the entities table.
 type Entity struct {
 	ID             int
@@ -378,6 +429,55 @@ func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
 			return err
 		}
 	}
+	// Entities are fully resolved (and their canonical aliases registered)
+	// before relations are processed, so a relation's source/target id resolves
+	// to the correct canonical entity whether it was just created or already
+	// existed from an earlier pass.
+	for _, rel := range res.Relations {
+		if rel.Source == "" || rel.Target == "" || rel.Type == "" {
+			continue
+		}
+		src, ok, err := r.lookupAlias(canonKey(rel.Source), "")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			log.Printf("relation source entity %q not found; skipping relation", rel.Source)
+			continue
+		}
+		dst, ok, err := r.lookupAlias(canonKey(rel.Target), "")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			log.Printf("relation target entity %q not found; skipping relation", rel.Target)
+			continue
+		}
+		propsJSON, _ := json.Marshal(rel.Properties)
+		if err := r.insertRelation(src.ID, dst.ID, rel.Type, string(propsJSON), rel.Properties.Conf, p.ID, p.LinkQueueID, p.ChunkIndex); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertRelation persists one relation between two canonical entities and
+// publishes an entity lifecycle event for each endpoint so downstream consumers
+// learn that the entity's knowledge graph changed.
+func (r *EntitiesRepository) insertRelation(sourceID, targetID int, relType, propsJSON, conf string, passID, linkID, chunk int) error {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT INTO relations (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
+			"VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
+		sourceID, targetID, relType, propsJSON, conf, passID, linkID, chunk)); err != nil {
+		return err
+	}
+	// Emit an entity event for both endpoints: the relation edits their graph.
+	if src, err := r.GetEntity(sourceID); err == nil {
+		r.publishEvent(src.ID, src.DisplayName)
+	}
+	if dst, err := r.GetEntity(targetID); err == nil {
+		r.publishEvent(dst.ID, dst.DisplayName)
+	}
 	return nil
 }
 
@@ -571,6 +671,24 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error)
 		survivor.ID, loser.ID)); err != nil {
 		return Entity{}, err
 	}
+
+	// Redirect relations that pointed at the loser to the survivor so the
+	// knowledge graph stays consistent after a merge. A relation whose both
+	// endpoints collapse onto the survivor becomes a self-loop and is dropped.
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE OR IGNORE relations SET source_id = {} WHERE source_id = {}",
+		survivor.ID, loser.ID)); err != nil {
+		return Entity{}, err
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"UPDATE OR IGNORE relations SET target_id = {} WHERE target_id = {}",
+		survivor.ID, loser.ID)); err != nil {
+		return Entity{}, err
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM relations WHERE source_id = target_id")); err != nil {
+		return Entity{}, err
+	}
 	loserAliases, err := r.aliasesFor(loser.ID)
 	if err != nil {
 		return Entity{}, err
@@ -706,7 +824,7 @@ func (r *EntitiesRepository) rawNameForAlias(alias string) (string, error) {
 		func(row *sq.Row) string { return row.String("raw_name") })
 }
 
-// llmAnalysis is the subset of the model result we consume for entities.
+// llmAnalysis is the subset of the model result we consume.
 type llmAnalysis struct {
 	Entities []struct {
 		ID         string `json:"id"`
@@ -715,4 +833,16 @@ type llmAnalysis struct {
 			Name string `json:"name"`
 		} `json:"properties"`
 	} `json:"entities"`
+	Relations []struct {
+		Source string `json:"source"`
+		Target string `json:"target"`
+		Type   string `json:"type"`
+		Properties struct {
+			Details    string `json:"details"`
+			ExactQuote string `json:"exact_quote"`
+			Amount     string `json:"amount"`
+			When       string `json:"when"`
+			Conf       string `json:"conf"`
+		} `json:"properties"`
+	} `json:"relations"`
 }
