@@ -238,7 +238,7 @@ func (r *EntitiesRepository) upsertAlias(entityID int, alias, rawName string) er
 	if alias == "" {
 		return nil
 	}
-	_, err := sq.Exec(sq.Log(r.db), sq.SQLite.Queryf(
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"INSERT OR IGNORE INTO entity_aliases (entity_id, alias, raw_name) VALUES ({}, {}, {})",
 		entityID, alias, rawName))
 	return err
@@ -522,16 +522,19 @@ func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 		}
 	}
 	log.Println("reset: deleting entities (cascades aliases, mentions, relations, queue)")
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_mentions")); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM relations")); err != nil {
 		return err
 	}
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM goqite")); err != nil {
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_mentions")); err != nil {
 		return err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_aliases")); err != nil {
 		return err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entities")); err != nil {
+		return err
+	}
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM goqite")); err != nil {
 		return err
 	}
 	log.Println("reset: unmarking every pass as extracted")
@@ -772,7 +775,7 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error)
 		return Entity{}, err
 	}
 
-	if _, err := sq.Exec(sq.Log(r.db), sq.SQLite.Queryf(
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"DELETE FROM entity_aliases WHERE entity_id = {}", loser.ID)); err != nil {
 		return Entity{}, err
 	}
