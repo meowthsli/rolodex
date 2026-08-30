@@ -306,8 +306,9 @@ func TestExtractPassRelationPublishesEntityEvents(t *testing.T) {
 
 // TestDedupeRelationsDropsShorterNearIdentical verifies that two relations with
 // the same ordered endpoint pair and type, whose properties flatten to nearly
-// identical text blocks, are deduplicated: the row with the shorter text block is
-// deleted and only the more detailed one survives.
+// identical text blocks longer than 100 characters (the current dedup proximity
+// guard), are deduplicated: the row with the shorter text block is deleted and
+// only the more detailed one survives.
 func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
@@ -318,9 +319,12 @@ func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
 	repo.upsertAlias(a.ID, canonKey("Alice"), "Alice")
 	repo.upsertAlias(b.ID, canonKey("Acme"), "Acme")
 
-	// Two near-identical property blocks: the first is the shorter variant.
-	long := `{"details":"founded Acme in 2020 as CEO","exact_quote":"Alice founded Acme","when":"2020"}`
-	short := `{"details":"founded Acme in 2020 as CEO","exact_quote":"Alice founded Acme"}`
+	// Two near-identical property blocks, each over 100 chars once flattened so
+	// they clear the dedup proximity guard, with "when" omitted (ignored by the
+	// text-block flattening). The first is the fuller variant, the second drops
+	// a trailing clause and is therefore the shorter one.
+	long := `{"details":"Founded Acme in 2020 and took over as Chief Executive Officer of the entire company, overseeing all product lines, engineering teams, sales operations and global expansion","exact_quote":"Alice founded Acme"}`
+	short := `{"details":"Founded Acme in 2020 and took over as Chief Executive Officer of the entire company, overseeing all product lines, engineering teams and sales operations","exact_quote":"Alice founded Acme"}`
 	insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", long, "exact")
 	shortID := insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", short, "exact")
 

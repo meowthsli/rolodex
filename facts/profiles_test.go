@@ -160,7 +160,7 @@ func TestRebuildProfileEmptyRelationsNoEntities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if !strings.Contains(text, "No relations recorded yet") {
+	if !strings.Contains(text, "Связей не зарегистрировано") {
 		t.Errorf("profile should note the absence of relations, got %q", text)
 	}
 }
@@ -223,11 +223,11 @@ func TestRebuildProfileInverseRelation(t *testing.T) {
 		t.Fatalf("BuildProfile: %v", err)
 	}
 	// Carol (Person) -> Alice (Person), an incoming relation for Alice. Both
-	// names render red, and EMPLOYED_AT becomes the neutral noun "Трудоустройство".
-	if !strings.Contains(text, "<span style='color:#d33'>Carol</span> Трудоустройство <span style='color:#d33'>Alice</span>") {
+	// names render red, and EMPLOYED_AT renders with its neutral Russian noun.
+	if !strings.Contains(text, "<span style='color:#d33'>Carol</span> Сотрудничество/вовлечение <span style='color:#d33'>Alice</span>") {
 		t.Errorf("profile missing incoming relation sentence, got %q", text)
 	}
-	if !strings.Contains(text, "## Важные связи (входящие)") {
+	if !strings.Contains(text, "## Также важно") {
 		t.Errorf("profile missing incoming relation section header")
 	}
 }
@@ -242,7 +242,7 @@ func TestRelationTypeNoun(t *testing.T) {
 		{"INVESTED_IN", "Инвестиции"},
 		{"FOUNDED", "Основание"},
 		{"FOUNDED/COFOUNDED", "Основание"},
-		{"EMPLOYED_AT", "Трудоустройство"},
+		{"EMPLOYED_AT", "Сотрудничество/вовлечение"},
 		{"SEEDED", "Посевные инвестиции"},
 		{"ACQUIRED", "Приобретение"},
 		{"SOLD", "Продажа"},
