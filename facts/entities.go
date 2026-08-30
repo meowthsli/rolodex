@@ -23,7 +23,7 @@ const (
 	fuzzyThreshold = 0.87
 	// relationDedupThreshold is the minimum token similarity between two
 	// relations' property text blocks for them to count as duplicates.
-	relationDedupThreshold = 0.9
+	relationDedupThreshold = 0.5
 	// dateType is the only entity type that is exclusive: a Date entity may
 	// only merge with another Date entity, never with Person/Investor/etc.
 	dateType = "Date"
@@ -705,7 +705,7 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 // relationTextBlock flattens a relation's properties (details, exact quote,
 // amount, when, conf) plus its confidence column into one normalized string so
 // two relations can be compared field-by-field in a single token set.
-func relationTextBlock(props, confidence string) string {
+func relationTextBlock(props, _ string) string {
 	p := parseRelationProperties(props)
 	var parts []string
 	if p.Details != "" {
@@ -713,18 +713,6 @@ func relationTextBlock(props, confidence string) string {
 	}
 	if p.ExactQuote != "" {
 		parts = append(parts, p.ExactQuote)
-	}
-	if p.Amount != "" && p.Amount != "~" {
-		parts = append(parts, "amount: "+p.Amount)
-	}
-	if p.When != "" && p.When != "~" {
-		parts = append(parts, "when: "+p.When)
-	}
-	if p.Conf != "" {
-		parts = append(parts, "conf: "+p.Conf)
-	}
-	if confidence != "" {
-		parts = append(parts, "confidence: "+confidence)
 	}
 	return strings.Join(parts, " ")
 }
@@ -740,7 +728,7 @@ func relationsClose(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	return similarity(a, b) >= relationDedupThreshold
+	return len(a) > 100 && similarity(a, b) >= relationDedupThreshold
 }
 
 // relationDedupGroup keys relations that may duplicate: the same ordered pair of
@@ -792,11 +780,6 @@ func (r *EntitiesRepository) DedupeRelations(ctx context.Context) (int, error) {
 		for _, c := range cands {
 			dup := false
 			for _, k := range kept {
-				if c.rel.ID >= 615 && c.rel.ID <= 618 {
-					fmt.Println(c.blk)
-					fmt.Println(k.blk)
-					fmt.Printf("Similarity = %f", similarity(c.blk, k.blk))
-				}
 				if relationsClose(c.blk, k.blk) {
 					dup = true
 					break

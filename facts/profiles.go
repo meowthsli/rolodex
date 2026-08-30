@@ -236,19 +236,19 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	}
 
 	if len(outgoing) > 0 {
-		b.WriteString("\n## Важные связи (исходящие)\n")
+		b.WriteString("\n## Что происходило\n")
 		for _, rel := range outgoing {
 			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
 		}
 	}
 	if len(incoming) > 0 {
-		b.WriteString("\n## Важные связи (входящие)\n")
+		b.WriteString("\n## Также важно\n")
 		for _, rel := range incoming {
 			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
 		}
 	}
 	if len(outgoing) == 0 && len(incoming) == 0 {
-		b.WriteString("\n*No relations recorded yet.*\n")
+		b.WriteString("\n*Связей не зарегистрировано.*\n")
 	}
 	return b.String(), nil
 }
@@ -396,7 +396,7 @@ func relationTypeNoun(typ string) string {
 	case "SEEDED":
 		return "Посевные инвестиции"
 	case "EMPLOYED_AT":
-		return "Трудоустройство"
+		return "Сотрудничество/вовлечение"
 	case "VALUED":
 		return "Оценка"
 	case "ACQUIRED":

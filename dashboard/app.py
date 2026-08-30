@@ -39,15 +39,33 @@ def load_count(section: str) -> int:
 def load_entities() -> pd.DataFrame:
     conn = connect()
     q = """
-        SELECT id, display_name AS name, types, promotion_score AS score,
+        SELECT id, display_name AS name, types, properties,
+               promotion_score AS score,
                is_known AS known, created_at
         FROM entities
         ORDER BY promotion_score DESC, display_name
     """
     df = pd.read_sql_query(q, conn)
     df["types"] = df["types"].map(_parse_types)
+    df["props_names"] = df["properties"].map(_parse_props_names)
     df["known"] = df["known"].astype(bool)
     return df
+
+
+def _parse_props_names(raw: str) -> str:
+    # The properties block is a JSON array of property objects; collect the
+    # value of every "name" key (the raw mention names) as a comma list.
+    try:
+        vals = json.loads(raw)
+    except Exception:
+        return ""
+    names = []
+    for obj in vals if isinstance(vals, list) else [vals]:
+        if isinstance(obj, dict):
+            n = obj.get("name")
+            if n and n not in names:
+                names.append(n)
+    return ", ".join(names)
 
 
 def _parse_types(raw: str) -> str:
@@ -180,7 +198,7 @@ tab_entities, tab_relations, tab_graph, tab_profiles, tab_passes, tab_links = st
 with tab_entities:
     st.subheader("Entities")
     df_ent = load_entities()
-    st.dataframe(df_ent, width='stretch', hide_index=True)
+    st.dataframe(df_ent.drop(columns=["properties"]), width='stretch', hide_index=True)
     selected = st.selectbox(
         "Entity detail",
         df_ent["name"].tolist(),
@@ -191,9 +209,10 @@ with tab_entities:
         row = df_ent[df_ent["name"] == selected].iloc[0]
         detail = load_entity_detail(int(row["id"]))
         st.markdown(f"### {row['name']}")
-        st.write("Types:", row["types"])
-        st.write("Promotion score:", row["score"])
-        st.write("Known:", row["known"])
+        if row["props_names"]:
+            st.write("Именуется как:", row["props_names"])
+        st.write("Тип:", row["types"])
+        st.write("Упоминался:", row["score"])
         if detail["aliases"]:
             st.write("Aliases:", ", ".join(detail["aliases"]))
         st.dataframe(

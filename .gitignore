@@ -4,3 +4,4 @@
 # Local data and secrets.
 rolodex.db
 .env
+__pycache__
