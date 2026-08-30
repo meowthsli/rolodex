@@ -57,7 +57,7 @@ func NewOllamaAnalyzer(apiURL, apiKey string) *OllamaAnalyzer {
 		APIURL: apiURL,
 		APIKey: apiKey,
 		Model:  DefaultOllamaModel,
-		Prompt: DefaultAnalyzerPrompt,
+		Prompt: VentureAnalyzerPrompt,
 		Client: &http.Client{Timeout: 600 * time.Second},
 	}
 }

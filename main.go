@@ -151,7 +151,7 @@ func main() {
 	}
 	// The default venture-analysis prompt is registered under the "venture"
 	// domain. Links whose domain has no registered prompt are skipped.
-	prompts := map[string]string{"venture": facts.DefaultAnalyzerPrompt}
+	prompts := map[string]string{"venture": facts.VentureAnalyzerPrompt, "special": facts.SpecialAnalyzerPrompt}
 	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 1*time.Second,
 		facts.NewGoqiteEntityPublisher(db))
 
