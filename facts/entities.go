@@ -11,6 +11,8 @@ import (
 	"time"
 
 	sq "github.com/bokwoon95/sq"
+
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // Tuning constants for the reconciliation pipeline.
@@ -152,7 +154,7 @@ func EntityMapper(row *sq.Row) Entity {
 	var e Entity
 	e.ID = row.Int("id")
 	e.DisplayName = row.String("display_name")
-	e.Types = UnmarshalTypes(row.String("types"))
+	e.Types = utils.UnmarshalTypes(row.String("types"))
 	e.Properties = row.String("properties")
 	e.Confidence = row.String("confidence")
 	e.PromotionScore = row.Int("promotion_score")
@@ -277,11 +279,11 @@ func (r *EntitiesRepository) entityNames(id int) ([]string, error) {
 func (r *EntitiesRepository) CreateEntity(displayName string, types []string, props json.RawMessage) (Entity, error) {
 	propArr := "[]"
 	if len(props) > 0 {
-		propArr = mustJSON([]json.RawMessage{props})
+		propArr = utils.MustJSON([]json.RawMessage{props})
 	}
 	res, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"INSERT INTO entities (display_name, types, properties) VALUES ({}, {}, {})",
-		displayName, marshalTypes(types), propArr))
+		displayName, utils.MarshalTypes(types), propArr))
 	if err != nil {
 		return Entity{}, err
 	}
@@ -380,7 +382,7 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 			}
 			return nil, err
 		}
-		out = append(out, fuzzyCandidate{Entity: e, Score: similarity(name, h.Name)})
+		out = append(out, fuzzyCandidate{Entity: e, Score: utils.Similarity(name, h.Name)})
 	}
 	return out, nil
 }
@@ -390,7 +392,7 @@ func (r *EntitiesRepository) fuzzyCandidates(name string) ([]fuzzyCandidate, err
 // single query), then falls back to fuzzy FTS5 matching above the threshold with
 // a type-compatibility gate. Returns (entity, found).
 func (r *EntitiesRepository) resolveEntity(name, modelID string, types []string) (Entity, bool, error) {
-	if e, ok, err := r.lookupAlias(canonKey(name), canonKey(modelID)); err != nil {
+	if e, ok, err := r.lookupAlias(utils.CanonKey(name), utils.CanonKey(modelID)); err != nil {
 		return Entity{}, false, err
 	} else if ok {
 		return e, true, nil
@@ -466,7 +468,7 @@ func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) e
 		if rel.Source == "" || rel.Target == "" || rel.Type == "" {
 			continue
 		}
-		src, ok, err := r.lookupAlias(canonKey(rel.Source), "")
+		src, ok, err := r.lookupAlias(utils.CanonKey(rel.Source), "")
 		if err != nil {
 			return err
 		}
@@ -474,7 +476,7 @@ func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) e
 			log.Printf("relation source entity %q not found; skipping relation", rel.Source)
 			continue
 		}
-		dst, ok, err := r.lookupAlias(canonKey(rel.Target), "")
+		dst, ok, err := r.lookupAlias(utils.CanonKey(rel.Target), "")
 		if err != nil {
 			return err
 		}
@@ -593,11 +595,11 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 	if found {
 		// Register the mention's names as aliases on the new entity so that
 		// reconcile carries them over to the survivor.
-		if err := r.upsertAlias(e.ID, canonKey(name), name); err != nil {
+		if err := r.upsertAlias(e.ID, utils.CanonKey(name), name); err != nil {
 			return err
 		}
 		if modelID != "" {
-			if err := r.upsertAlias(e.ID, canonKey(modelID), modelID); err != nil {
+			if err := r.upsertAlias(e.ID, utils.CanonKey(modelID), modelID); err != nil {
 				return err
 			}
 		}
@@ -607,11 +609,11 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 		}
 		return nil
 	}
-	if err := r.upsertAlias(e.ID, canonKey(name), name); err != nil {
+	if err := r.upsertAlias(e.ID, utils.CanonKey(name), name); err != nil {
 		return err
 	}
 	if modelID != "" {
-		if err := r.upsertAlias(e.ID, canonKey(modelID), modelID); err != nil {
+		if err := r.upsertAlias(e.ID, utils.CanonKey(modelID), modelID); err != nil {
 			return err
 		}
 	}
@@ -646,7 +648,7 @@ func (r *EntitiesRepository) findMergePair(ents []Entity, aliases map[int][]stri
 	// Fuzzy name similarity fallback (pairwise, in-memory).
 	for i := 0; i < len(ents); i++ {
 		for j := i + 1; j < len(ents); j++ {
-			if similarity(ents[i].DisplayName, ents[j].DisplayName) >= fuzzyThreshold &&
+			if utils.Similarity(ents[i].DisplayName, ents[j].DisplayName) >= fuzzyThreshold &&
 				typesCompatible(ents[i].Types, ents[j].Types) {
 				return &ents[i], &ents[j], nil
 			}
@@ -736,7 +738,7 @@ func relationsClose(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	return len(a) > 100 && similarity(a, b) >= relationDedupThreshold
+	return len(a) > 100 && utils.Similarity(a, b) >= relationDedupThreshold
 }
 
 // relationDedupGroup keys relations that may duplicate: the same ordered pair of
@@ -836,8 +838,8 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int, keepName bool) 
 		survivor, loser = pickSurvivor(a, b)
 	}
 
-	newTypes := unionStrings(survivor.Types, loser.Types)
-	newProps := unionProperties(survivor.Properties, json.RawMessage(loser.Properties))
+	newTypes := utils.UnionStrings(survivor.Types, loser.Types)
+	newProps := utils.UnionProperties(survivor.Properties, json.RawMessage(loser.Properties))
 	// The survivor's display name is kept unless the loser's is strictly longer;
 	// pass keepName to always keep the survivor's name (e.g. manual merges).
 	display := survivor.DisplayName
@@ -892,7 +894,7 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int, keepName bool) 
 			"promotion_score = promotion_score + {}, "+
 			"is_known = CASE WHEN is_known = 1 OR {} = 1 OR promotion_score + {} >= {} THEN 1 ELSE 0 END, "+
 			"updated_at = CURRENT_TIMESTAMP WHERE id = {}",
-		display, marshalTypes(newTypes), newProps, loser.PromotionScore, loserKnown, loser.PromotionScore, promotionThreshold, survivor.ID)); err != nil {
+		display, utils.MarshalTypes(newTypes), newProps, loser.PromotionScore, loserKnown, loser.PromotionScore, promotionThreshold, survivor.ID)); err != nil {
 		return Entity{}, err
 	}
 

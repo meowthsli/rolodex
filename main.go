@@ -22,6 +22,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	facts "meo.ru/rolodex/facts"
+	llm "meo.ru/rolodex/facts/llm"
+	utils "meo.ru/rolodex/facts/utils"
 	grab "meo.ru/rolodex/grab"
 	profs "meo.ru/rolodex/profiles"
 )
@@ -140,8 +142,8 @@ func main() {
 	}
 	// The default venture-analysis prompt is registered under the "venture"
 	// domain. Links whose domain has no registered prompt are skipped.
-	prompts := map[string]string{"venture": facts.VentureAnalyzerPrompt, "special": facts.SpecialAnalyzerPrompt}
-	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 5*time.Second,
+	prompts := map[string]string{"venture": utils.VentureAnalyzerPrompt, "special": utils.SpecialAnalyzerPrompt}
+	fm := facts.NewFactsMachine(db, llm.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 5*time.Second,
 		facts.NewGoqiteEntityPublisher(db))
 
 	// Pre-computed long-text profiles, rebuilt for an entity whenever its graph

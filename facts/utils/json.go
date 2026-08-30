@@ -1,4 +1,4 @@
-package facts
+package utils
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 
 // --- JSON helpers ---
 
-func marshalTypes(t []string) string {
+func MarshalTypes(t []string) string {
 	if len(t) == 0 {
 		return "[]"
 	}
@@ -24,7 +24,7 @@ func UnmarshalTypes(s string) []string {
 	return t
 }
 
-func unionStrings(a, b []string) []string {
+func UnionStrings(a, b []string) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(a)+len(b))
 	for _, x := range append(append([]string{}, a...), b...) {
@@ -41,9 +41,9 @@ func unionStrings(a, b []string) []string {
 	return out
 }
 
-// unionProperties concatenates two JSON arrays of property objects, dropping
+// UnionProperties concatenates two JSON arrays of property objects, dropping
 // duplicate entries so all distinct values are preserved.
-func unionProperties(existing string, add json.RawMessage) string {
+func UnionProperties(existing string, add json.RawMessage) string {
 	var a, b []json.RawMessage
 	_ = json.Unmarshal([]byte(existing), &a)
 	_ = json.Unmarshal(add, &b)
@@ -63,7 +63,7 @@ func unionProperties(existing string, add json.RawMessage) string {
 	return string(out)
 }
 
-func mustJSON(v interface{}) string {
+func MustJSON(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }

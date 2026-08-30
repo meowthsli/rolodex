@@ -15,6 +15,7 @@ import (
 
 	sq "github.com/bokwoon95/sq"
 	facts "meo.ru/rolodex/facts"
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // ENTITY_PROFILES describes the entity_profiles table: one pre-computed
@@ -273,7 +274,7 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 			var p profileRelation
 			p.Type = row.String("type")
 			p.Other = row.String("other")
-			p.OtherTypes = facts.UnmarshalTypes(row.String("other_types"))
+			p.OtherTypes = utils.UnmarshalTypes(row.String("other_types"))
 			p.Direction = row.String("direction")
 			p.SourceURL = row.String("src_url")
 			p.ChunkText = row.String("chunk_text")

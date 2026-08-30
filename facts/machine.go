@@ -8,6 +8,8 @@ import (
 	"time"
 
 	sq "github.com/bokwoon95/sq"
+
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // Analyzer turns a single link's readable text into a structured analysis
@@ -44,7 +46,7 @@ type FactsMachine struct {
 	db       *sql.DB
 	analyzer Analyzer
 	prompts  map[string]string
-	Chunker  *TextChunker
+	Chunker  *utils.TextChunker
 	passes   *PassesRepository
 	entities *EntitiesRepository
 	tick     time.Duration
@@ -59,7 +61,7 @@ func NewFactsMachine(db *sql.DB, analyzer Analyzer, prompts map[string]string, t
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
-	return &FactsMachine{db: db, analyzer: analyzer, prompts: prompts, Chunker: NewTextChunker(),
+	return &FactsMachine{db: db, analyzer: analyzer, prompts: prompts, 	Chunker: utils.NewTextChunker(),
 		passes:   NewPassesRepository(db),
 		entities: NewEntitiesRepository(db, p),
 		tick:     tick}

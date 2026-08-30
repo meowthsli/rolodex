@@ -1,4 +1,4 @@
-package facts
+package llm
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // ollamaMessage mirrors the OpenAI-style message shape used by Ollama's native
@@ -57,7 +59,7 @@ func NewOllamaAnalyzer(apiURL, apiKey string) *OllamaAnalyzer {
 		APIURL: apiURL,
 		APIKey: apiKey,
 		Model:  DefaultOllamaModel,
-		Prompt: VentureAnalyzerPrompt,
+		Prompt: utils.VentureAnalyzerPrompt,
 		Client: &http.Client{Timeout: 600 * time.Second},
 	}
 }

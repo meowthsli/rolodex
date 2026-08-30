@@ -1,4 +1,4 @@
-package facts
+package utils
 
 import (
 	"strings"

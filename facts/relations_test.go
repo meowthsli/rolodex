@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	sq "github.com/bokwoon95/sq"
+
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // insertRawRelation inserts a relations row directly, bypassing insertRelation's
@@ -60,11 +62,11 @@ func TestExtractPassStoresRelation(t *testing.T) {
 		t.Fatalf("expected 1 relation, got %d", n)
 	}
 
-	src, ok, _ := repo.lookupAlias(canonKey("GORIN_EVGENIY"), "")
+	src, ok, _ := repo.lookupAlias(utils.CanonKey("GORIN_EVGENIY"), "")
 	if !ok {
 		t.Fatal("source entity not found")
 	}
-	dst, ok, _ := repo.lookupAlias(canonKey("ACME_STARTUP"), "")
+	dst, ok, _ := repo.lookupAlias(utils.CanonKey("ACME_STARTUP"), "")
 	if !ok {
 		t.Fatal("target entity not found")
 	}
@@ -114,7 +116,7 @@ func TestExtractPassResolvesRelationToPreExistingEntity(t *testing.T) {
 	if err := repo.ExtractPass(ctx, p1); err != nil {
 		t.Fatalf("ExtractPass 1: %v", err)
 	}
-	existing, ok, _ := repo.lookupAlias(canonKey("GORIN_EVGENIY"), "")
+	existing, ok, _ := repo.lookupAlias(utils.CanonKey("GORIN_EVGENIY"), "")
 	if !ok {
 		t.Fatal("entity not found after pass 1")
 	}
@@ -282,11 +284,11 @@ func TestExtractPassRelationPublishesEntityEvents(t *testing.T) {
 		t.Fatalf("ExtractPass: %v", err)
 	}
 
-	src, ok, _ := repo.lookupAlias(canonKey("GORIN_EVGENIY"), "")
+	src, ok, _ := repo.lookupAlias(utils.CanonKey("GORIN_EVGENIY"), "")
 	if !ok {
 		t.Fatal("source entity not found")
 	}
-	dst, ok, _ := repo.lookupAlias(canonKey("ACME_STARTUP"), "")
+	dst, ok, _ := repo.lookupAlias(utils.CanonKey("ACME_STARTUP"), "")
 	if !ok {
 		t.Fatal("target entity not found")
 	}
@@ -316,8 +318,8 @@ func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
 
 	a, _ := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	b, _ := repo.createEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
-	repo.upsertAlias(a.ID, canonKey("Alice"), "Alice")
-	repo.upsertAlias(b.ID, canonKey("Acme"), "Acme")
+	repo.upsertAlias(a.ID, utils.CanonKey("Alice"), "Alice")
+	repo.upsertAlias(b.ID, utils.CanonKey("Acme"), "Acme")
 
 	// Two near-identical property blocks, each over 100 chars once flattened so
 	// they clear the dedup proximity guard, with "when" omitted (ignored by the

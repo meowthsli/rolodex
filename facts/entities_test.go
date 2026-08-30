@@ -10,6 +10,8 @@ import (
 
 	sq "github.com/bokwoon95/sq"
 	"maragu.dev/goqite"
+
+	utils "meo.ru/rolodex/facts/utils"
 )
 
 // TestCreateEntityUnderPool reproduces the "sql: no rows in result set" failure
@@ -63,14 +65,14 @@ func TestCreateEntityUnderPool(t *testing.T) {
 }
 
 func TestCanonKeyOrderInvariant(t *testing.T) {
-	a := canonKey("Евгений Голанд")
-	b := canonKey("Голанд Евгений")
+	a := utils.CanonKey("Евгений Голанд")
+	b := utils.CanonKey("Голанд Евгений")
 	if a != b {
 		t.Errorf("canonKey not order-invariant: %q vs %q", a, b)
 	}
 	// The model's uppercase id should align with the transliterated name.
-	if got := canonKey("GORIN_EVGENIY"); got != "evgeni_gorin" {
-		t.Errorf("canonKey(modelID) = %q, want evgeni_gorin", got)
+	if got := utils.CanonKey("GORIN_EVGENIY"); got != "evgeni_gorin" {
+		t.Errorf("utils.CanonKey(modelID) = %q, want evgeni_gorin", got)
 	}
 }
 
@@ -89,8 +91,8 @@ func TestCanonKeyNameVariants(t *testing.T) {
 		{"Пётр", "Pyotr"},      // another Latin form
 	}
 	for _, c := range cases {
-		if got, want := canonKey(c.a), canonKey(c.b); got != want {
-			t.Errorf("canonKey(%q)=%q but canonKey(%q)=%q; want them equal", c.a, got, c.b, want)
+		if got, want := utils.CanonKey(c.a), utils.CanonKey(c.b); got != want {
+			t.Errorf("utils.CanonKey(%q)=%q but utils.CanonKey(%q)=%q; want them equal", c.a, got, c.b, want)
 		}
 	}
 }
@@ -109,8 +111,8 @@ func TestCanonKeyTranslitFold(t *testing.T) {
 		{"Сергей", "Sergei"},   // ey -> ei
 	}
 	for _, c := range cases {
-		if got, want := canonKey(c.a), canonKey(c.b); got != want {
-			t.Errorf("canonKey(%q)=%q but canonKey(%q)=%q; want equal", c.a, got, c.b, want)
+		if got, want := utils.CanonKey(c.a), utils.CanonKey(c.b); got != want {
+			t.Errorf("utils.CanonKey(%q)=%q but utils.CanonKey(%q)=%q; want equal", c.a, got, c.b, want)
 		}
 	}
 }
@@ -129,8 +131,8 @@ func TestCanonKeyDiminutives(t *testing.T) {
 		{"Коля", "Николай"},
 	}
 	for _, c := range cases {
-		if got, want := canonKey(c.dim), canonKey(c.full); got != want {
-			t.Errorf("canonKey(%q)=%q but canonKey(%q)=%q; want equal", c.dim, got, c.full, want)
+		if got, want := utils.CanonKey(c.dim), utils.CanonKey(c.full); got != want {
+			t.Errorf("utils.CanonKey(%q)=%q but utils.CanonKey(%q)=%q; want equal", c.dim, got, c.full, want)
 		}
 	}
 }
@@ -189,9 +191,9 @@ func TestExtractPassMergesNameVariants(t *testing.T) {
 	}
 
 	// Both spellings and the model id must resolve to the same entity.
-	e1, ok1, _ := repo.lookupAlias(canonKey("Евгений Голанд"), "")
-	e2, ok2, _ := repo.lookupAlias(canonKey("Голанд Евгений"), "")
-	e3, ok3, _ := repo.lookupAlias(canonKey("GORLAND_EVGENIY"), "")
+	e1, ok1, _ := repo.lookupAlias(utils.CanonKey("Евгений Голанд"), "")
+	e2, ok2, _ := repo.lookupAlias(utils.CanonKey("Голанд Евгений"), "")
+	e3, ok3, _ := repo.lookupAlias(utils.CanonKey("GORLAND_EVGENIY"), "")
 	if !ok1 || !ok2 || !ok3 {
 		t.Fatalf("expected all three forms to resolve: %v %v %v", ok1, ok2, ok3)
 	}
@@ -234,8 +236,8 @@ func TestExtractPassUnifiesTranslitAndDiminutive(t *testing.T) {
 
 	// Each pair of spellings must resolve to a single entity.
 	check := func(a, b string) {
-		ea, oka, _ := repo.lookupAlias(canonKey(a), "")
-		eb, okb, _ := repo.lookupAlias(canonKey(b), "")
+		ea, oka, _ := repo.lookupAlias(utils.CanonKey(a), "")
+		eb, okb, _ := repo.lookupAlias(utils.CanonKey(b), "")
 		if !oka || !okb {
 			t.Fatalf("expected both %q and %q to resolve: %v %v", a, b, oka, okb)
 		}
@@ -262,7 +264,7 @@ func TestExtractionPromotesKnownAfterThreshold(t *testing.T) {
 		}
 	}
 
-	e, ok, err := repo.lookupAlias(canonKey("Одна И Та же Компания"), "")
+	e, ok, err := repo.lookupAlias(utils.CanonKey("Одна И Та же Компания"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +456,7 @@ func TestMergeEntitiesKeepsMasterName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.upsertAlias(slave.ID, canonKey("Master Company Incorporated"), "Master Company Incorporated"); err != nil {
+	if err := r.upsertAlias(slave.ID, utils.CanonKey("Master Company Incorporated"), "Master Company Incorporated"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -467,7 +469,7 @@ func TestMergeEntitiesKeepsMasterName(t *testing.T) {
 	}
 
 	// The longer slave name must remain reachable as an alias of the survivor.
-	got, ok, err := r.lookupAlias(canonKey("Master Company Incorporated"), "")
+	got, ok, err := r.lookupAlias(utils.CanonKey("Master Company Incorporated"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

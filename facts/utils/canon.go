@@ -1,4 +1,4 @@
-package facts
+package utils
 
 import (
 	"sort"
@@ -237,13 +237,13 @@ func canonicalToken(t string) string {
 	return t
 }
 
-// canonKey produces a deterministic, order/case/punctuation-invariant key for a
+// CanonKey produces a deterministic, order/case/punctuation-invariant key for a
 // name: split into word tokens, transliterate each, fold transliteration
 // variants and diminutives, sort the tokens and join with "_". This makes
 // "Евгений Голанд" and "Голанд Евгений" collide, aligns with the model's
 // uppercase ids (GORIN_EVGENIY -> evgeni_gorin), and unifies transliteration and
 // diminutive variants (Алексей == Alexey, Пётр == Петя == Petya).
-func canonKey(s string) string {
+func CanonKey(s string) string {
 	fields := strings.FieldsFunc(s, func(r rune) bool { return !isWordRune(r) })
 	words := make([]string, 0, len(fields))
 	for _, f := range fields {
@@ -255,9 +255,9 @@ func canonKey(s string) string {
 	return strings.Join(words, "_")
 }
 
-// canonTokens returns the sorted, de-duplicated token set of a name's canonKey.
+// canonTokens returns the sorted, de-duplicated token set of a name's CanonKey.
 func canonTokens(s string) []string {
-	parts := strings.Split(canonKey(s), "_")
+	parts := strings.Split(CanonKey(s), "_")
 	out := make([]string, 0, len(parts))
 	seen := make(map[string]struct{})
 	for _, p := range parts {
@@ -273,11 +273,11 @@ func canonTokens(s string) []string {
 	return out
 }
 
-// similarity scores how likely two names refer to the same entity. It is the
-// Jaccard index over canonKey token sets, with an abbreviation bonus: a token
+// Similarity scores how likely two names refer to the same entity. It is the
+// Jaccard index over CanonKey token sets, with an abbreviation bonus: a token
 // like "p." (single letter + dot) is treated as matching any token starting
 // with that letter, so "Евгений П." matches "Евгений Петров".
-func similarity(a, b string) float64 {
+func Similarity(a, b string) float64 {
 	ta := canonTokens(a)
 	tb := canonTokens(b)
 	if len(ta) == 0 && len(tb) == 0 {
