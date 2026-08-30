@@ -2,8 +2,7 @@
 TAGS := sqlite_fts5
 BIN  := bin
 
-.PHONY: all build rolodex add-link add-content reconcile clear-events merge-entities test vet clean
-
+.PHONY: all build rolodex add-link add-content reconcile clear-events merge-entities dashboard start test vet clean install-dashboard
 # Build everything.
 all: build
 
@@ -32,6 +31,15 @@ merge-entities:
 # Run the full test suite (FTS5 enabled).
 test:
 	go test -tags $(TAGS) ./...
+
+# Install dashboard deps into ./venv and launch the read-only Streamlit view.
+install-dashboard:
+	./venv/bin/pip install -r dashboard/requirements.txt
+
+dashboard: start
+
+start:
+	./venv/bin/streamlit run dashboard/app.py
 
 vet:
 	go vet -tags $(TAGS) ./...

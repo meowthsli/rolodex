@@ -81,6 +81,32 @@ Flags:
 
 Prompts for `[y/N]` confirmation on stdin before merging. Both ids must exist.
 
+## Dashboard (read-only)
+
+A Python + Streamlit web view of the knowledge graph. It only reads `rolodex.db`
+(entities, relations, passes, link queue) and never writes — you can point it at
+a live database while the Go service runs.
+
+Setup and launch:
+
+```
+make install-dashboard   # installs dashboard/requirements.txt into ./venv
+make dashboard           # runs streamlit, opens http://localhost:8501
+```
+
+Or run directly: `./venv/bin/streamlit run dashboard/app.py`
+
+Tabs:
+- **Entities** — table sorted by promotion score, plus a detail view with
+  aliases and all in/out relations for a selected entity.
+- **Relations** — source / type / target listing.
+- **Graph** — spring-layout knowledge graph of the top-N entities.
+- **Passes** — extraction passes with domain, errors, and source URL.
+- **Links** — the crawl queue with status (ok/error) per link.
+
+The database path defaults to `rolodex.db`; override with the `ROLODEX_DB`
+environment variable. Deps live in `dashboard/requirements.txt`.
+
 ## Scraper rules (rolodex)
 For reference, the crawler enforces:
 - **Max depth**: link discovery only runs for generations ≤ 2.
