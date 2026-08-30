@@ -127,7 +127,7 @@ func main() {
 
 	// Scraper: every tick it picks the next unscraped link, fetches its page
 	// over HTTP, extracts readable text, stores it, and discovers new links.
-	scraper := grab.NewScraper(repo, &http.Client{}, 1*time.Second)
+	scraper := grab.NewScraper(repo, &http.Client{}, 5*time.Second)
 	if *noLinks {
 		scraper.SetNoLinks(true)
 	}
@@ -152,7 +152,7 @@ func main() {
 	// The default venture-analysis prompt is registered under the "venture"
 	// domain. Links whose domain has no registered prompt are skipped.
 	prompts := map[string]string{"venture": facts.VentureAnalyzerPrompt, "special": facts.SpecialAnalyzerPrompt}
-	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 1*time.Second,
+	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 5*time.Second,
 		facts.NewGoqiteEntityPublisher(db))
 
 	// Pre-computed long-text profiles, rebuilt for an entity whenever its graph

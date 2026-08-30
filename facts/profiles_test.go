@@ -80,12 +80,21 @@ func TestRebuildProfileRendersRelations(t *testing.T) {
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "(") &&
 			strings.HasSuffix(strings.TrimSpace(line), ")") &&
-			strings.Contains(line, "source: https://example.com/") {
+			strings.Contains(line, "https://example.com/") {
 			grouped = true
 		}
 	}
 	if !grouped {
 		t.Errorf("profile source URL not grouped with metadata in parentheses: %q", text)
+	}
+	// The "source" word carries a footnote reference, and the corresponding pass
+	// chunk (here the chunk text is "t") is rendered as a numbered footnote at
+	// the end of the profile.
+	if !strings.Contains(text, `<sup><a href="#fn-1" id="fnref-1">[1]</a></sup>: https://example.com/`) {
+		t.Errorf("profile source word missing footnote reference: %q", text)
+	}
+	if !strings.Contains(text, `<li id="fn-1">t <a href="#fnref-1" title="back">↩</a></li>`) {
+		t.Errorf("profile missing footnote with chunk text: %q", text)
 	}
 }
 
@@ -255,5 +264,62 @@ func TestRelationTypeNoun(t *testing.T) {
 		if got := relationTypeNoun(c.typ); got != c.want {
 			t.Errorf("relationTypeNoun(%q) = %q, want %q", c.typ, got, c.want)
 		}
+	}
+}
+
+// TestBuildProfileDedupesChunkFootnotes verifies that footnotes are emitted per
+// unique pass chunk: two relations backed by the same chunk text share a single
+// footnote reference, while a relation from a different chunk gets its own
+// footnote. No duplicate footnote is rendered for the repeated chunk.
+func TestBuildProfileDedupesChunkFootnotes(t *testing.T) {
+	db := setupTestDB(t)
+	profiles := NewProfilesRepository(db)
+	repo := newTestRepo(t, db)
+	passes := NewPassesRepository(db)
+
+	linkID := insertLink(t, db)
+	chunkShared := "Acme was founded by Alice in 2020."
+	chunkOther := "Alice later became CEO of Acme."
+
+	// Three distinct passes; two share the same chunk text.
+	p1, _ := passes.UpsertPass(linkID, "d", 0, 0, 1, chunkShared, "h1", "{}")
+	p2, _ := passes.UpsertPass(linkID, "d", 1, 0, 1, chunkShared, "h2", "{}")
+	p3, _ := passes.UpsertPass(linkID, "d", 2, 0, 1, chunkOther, "h3", "{}")
+
+	alice, _ := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	acme, _ := repo.createEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
+
+	props := `{"details":"x"}`
+	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p1.ID, linkID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p2.ID, linkID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p3.ID, linkID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := profiles.BuildProfile(alice.ID)
+	if err != nil {
+		t.Fatalf("BuildProfile: %v", err)
+	}
+
+	// The shared chunk is deduped: exactly two relations point at footnote [1]
+	// (one per reference), so `[1]` appears twice and no second footnote for it.
+	if got := strings.Count(text, `[1]`); got != 2 {
+		t.Errorf("expected footnote [1] referenced by the two shared-chunk relations, got %d refs", got)
+	}
+	// Relation 3 differs only by chunk, so it references a distinct footnote [2].
+	if got := strings.Count(text, `[2]`); got != 1 {
+		t.Errorf("expected the other chunk to get a single footnote [2], got %d refs", got)
+	}
+	// The shared chunk's text appears exactly once (its footnote body), proving
+	// no duplicate footnote was rendered; the other chunk appears once too.
+	if got := strings.Count(text, chunkShared); got != 1 {
+		t.Errorf("expected the shared chunk text once in the footnote list, got %d", got)
+	}
+	if got := strings.Count(text, chunkOther); got != 1 {
+		t.Errorf("expected the other chunk text once in the footnote list, got %d", got)
 	}
 }

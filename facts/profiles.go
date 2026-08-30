@@ -3,6 +3,8 @@ package facts
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"html"
 	"log"
 	"strings"
 	"time"
@@ -52,6 +54,7 @@ type profileRelation struct {
 	When       string   // when from relation properties
 	Confidence string   // confidence measure from relation properties
 	SourceURL  string   // page URL the relation was extracted from
+	ChunkText  string   // full text of the pass chunk the relation came from
 }
 
 // relationProperties is the JSON shape stored in relations.properties for the
@@ -235,21 +238,23 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 		}
 	}
 
+	var fn footnoteCollector
 	if len(outgoing) > 0 {
 		b.WriteString("\n## Что происходило\n")
 		for _, rel := range outgoing {
-			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
+			renderRelationSection(&b, ent.DisplayName, ent.Types, rel, &fn)
 		}
 	}
 	if len(incoming) > 0 {
 		b.WriteString("\n## Также важно\n")
 		for _, rel := range incoming {
-			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
+			renderRelationSection(&b, ent.DisplayName, ent.Types, rel, &fn)
 		}
 	}
 	if len(outgoing) == 0 && len(incoming) == 0 {
 		b.WriteString("\n*Связей не зарегистрировано*\n")
 	}
+	fn.render(&b)
 	return b.String(), nil
 }
 
@@ -261,11 +266,12 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 			"CASE WHEN r.source_id = {} THEN 'outgoing' ELSE 'incoming' END AS direction, "+
 			"CASE WHEN r.source_id = {} THEN t.display_name ELSE s.display_name END AS other, "+
 			"CASE WHEN r.source_id = {} THEN t.types ELSE s.types END AS other_types, "+
-			"lq.url AS src_url "+
+			"lq.url AS src_url, p.chunk_text AS chunk_text "+
 			"FROM relations r "+
 			"JOIN entities s ON s.id = r.source_id "+
 			"JOIN entities t ON t.id = r.target_id "+
 			"LEFT JOIN link_queue lq ON lq.id = r.link_id "+
+			"LEFT JOIN passes p ON p.id = r.pass_id "+
 			"WHERE r.source_id = {} OR r.target_id = {} "+
 			"ORDER BY r.id", entityID, entityID, entityID, entityID, entityID),
 		func(row *sq.Row) profileRelation {
@@ -275,6 +281,7 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 			p.OtherTypes = unmarshalTypes(row.String("other_types"))
 			p.Direction = row.String("direction")
 			p.SourceURL = row.String("src_url")
+			p.ChunkText = row.String("chunk_text")
 			props := parseRelationProperties(row.String("properties"))
 			p.Details = props.Details
 			p.Quote = props.ExactQuote
@@ -306,7 +313,7 @@ func parseRelationProperties(raw string) relationProperties {
 // the source page the fact was taken from. Entity names are colored by type —
 // a Person name is red, any other type is green — so they stand out in the
 // rendered profile.
-func renderRelationSection(b *strings.Builder, self string, selfTypes []string, rel profileRelation) {
+func renderRelationSection(b *strings.Builder, self string, selfTypes []string, rel profileRelation, fn *footnoteCollector) {
 	// Humanize: "Alice Основание Acme" / "Alice Трудоустройство Acme", with each
 	// entity name colored by its own type and the relation type as a neutral noun.
 	relNoun := relationTypeNoun(rel.Type)
@@ -337,7 +344,7 @@ func renderRelationSection(b *strings.Builder, self string, selfTypes []string, 
 		extras = append(extras, "confidence: "+rel.Confidence)
 	}
 	if rel.SourceURL != "" {
-		extras = append(extras, "source: "+rel.SourceURL)
+		extras = append(extras, "source"+fn.reference(rel.ChunkText)+": "+rel.SourceURL)
 	}
 	if len(extras) > 0 {
 		b.WriteString("(")
@@ -349,6 +356,55 @@ func renderRelationSection(b *strings.Builder, self string, selfTypes []string, 
 		b.WriteString(rel.Quote)
 		b.WriteString("”\n")
 	}
+}
+
+// footnoteItem is one unique pass chunk rendered as a numbered footnote.
+type footnoteItem struct {
+	id    int
+	chunk string
+}
+
+// footnoteCollector accumulates the distinct pass chunks referenced by a
+// profile's relations and renders them as numbered footnotes. Identical chunks
+// map to a single footnote, so a repeated chunk reuses the same reference.
+type footnoteCollector struct {
+	byChunk map[string]int // chunk text -> footnote id (1-based)
+	items   []footnoteItem // ordered unique footnotes
+}
+
+// reference returns the inline footnote reference for a chunk, registering the
+// chunk (and assigning it the next footnote id) on first use. An empty chunk
+// yields nothing.
+func (f *footnoteCollector) reference(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	if id, ok := f.byChunk[chunk]; ok {
+		return fmt.Sprintf(`<sup><a href="#fn-%d" id="fnref-%d">[%d]</a></sup>`, id, id, id)
+	}
+	id := len(f.items) + 1
+	if f.byChunk == nil {
+		f.byChunk = make(map[string]int)
+	}
+	f.byChunk[chunk] = id
+	f.items = append(f.items, footnoteItem{id, chunk})
+	return fmt.Sprintf(`<sup><a href="#fn-%d" id="fnref-%d">[%d]</a></sup>`, id, id, id)
+}
+
+// render appends the collected footnotes as an HTML ordered list. Each entry is
+// anchored so clicking a reference jumps to it, and a back-link returns from the
+// footnote to its first reference.
+func (f *footnoteCollector) render(b *strings.Builder) {
+	if len(f.items) == 0 {
+		return
+	}
+	b.WriteString("\n## Источники\n")
+	b.WriteString("<ol>\n")
+	for _, it := range f.items {
+		fmt.Fprintf(b, "<li id=\"fn-%d\">%s <a href=\"#fnref-%d\" title=\"back\">↩</a></li>\n",
+			it.id, html.EscapeString(it.chunk), it.id)
+	}
+	b.WriteString("</ol>\n")
 }
 
 // colorName wraps an entity name in an HTML span colored by its type: a Person
