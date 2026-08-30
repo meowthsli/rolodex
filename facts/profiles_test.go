@@ -53,24 +53,39 @@ func TestRebuildProfileRendersRelations(t *testing.T) {
 		t.Fatal("BuildProfile returned empty document")
 	}
 
-	// The header names the entity and its type.
-	if !strings.Contains(text, "# Евгений Горин") {
-		t.Errorf("profile missing entity header: %q", text)
+	// The header names the entity, with the name wrapped in a red HTML span so
+	// it renders colored in the dashboard.
+	if !strings.Contains(text, "# <span style='color:#d33'>Евгений Горин</span>") {
+		t.Errorf("profile missing red entity header: %q", text)
 	}
 	if !strings.Contains(text, "Person") {
 		t.Errorf("profile missing type section")
 	}
-	// The relation appears in prose: entity FOUNDED the other.
-	if !strings.Contains(text, "Евгений Горин FOUNDED Acme") {
-		t.Errorf("profile missing outgoing relation sentence")
+	// The relation appears in prose: entity FOUNDED the other. The Person name
+	// is red, the Startup (non-Person) name is green, and the relation type is
+	// rendered as a neutral Russian noun ("Основание" for FOUNDED).
+	if !strings.Contains(text, "<span style='color:#d33'>Евгений Горин</span> Основание <span style='color:#2e7d32'>Acme</span>") {
+		t.Errorf("profile missing colored outgoing relation sentence")
 	}
 	// The parsed exact quote is embedded.
 	if !strings.Contains(text, "“Горин основал Acme”") {
 		t.Errorf("profile missing exact quote")
 	}
-	// The source URL (with the seed link inserted per-test) is linked.
-	if !strings.Contains(text, "Source: https://example.com/") {
-		t.Errorf("profile missing source URL")
+	// The metadata (when/confidence/source) is attributed inside one set of
+	// parentheses, and the source page URL is part of that same grouped line.
+	if !strings.Contains(text, "(when: 2020") {
+		t.Errorf("profile metadata not wrapped in parentheses: %q", text)
+	}
+	grouped := false
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "(") &&
+			strings.HasSuffix(strings.TrimSpace(line), ")") &&
+			strings.Contains(line, "source: https://example.com/") {
+			grouped = true
+		}
+	}
+	if !grouped {
+		t.Errorf("profile source URL not grouped with metadata in parentheses: %q", text)
 	}
 }
 
@@ -207,10 +222,38 @@ func TestRebuildProfileInverseRelation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	if !strings.Contains(text, "Carol EMPLOYED_AT Alice") {
+	// Carol (Person) -> Alice (Person), an incoming relation for Alice. Both
+	// names render red, and EMPLOYED_AT becomes the neutral noun "Трудоустройство".
+	if !strings.Contains(text, "<span style='color:#d33'>Carol</span> Трудоустройство <span style='color:#d33'>Alice</span>") {
 		t.Errorf("profile missing incoming relation sentence, got %q", text)
 	}
-	if !strings.Contains(text, "## Relations (incoming)") {
+	if !strings.Contains(text, "## Важные связи (входящие)") {
 		t.Errorf("profile missing incoming relation section header")
+	}
+}
+
+// TestRelationTypeNoun verifies the raw relation type is rendered as a neutral
+// Russian noun in profiles, and that unknown types fall back to the raw token.
+func TestRelationTypeNoun(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want string
+	}{
+		{"INVESTED_IN", "Инвестиции"},
+		{"FOUNDED", "Основание"},
+		{"FOUNDED/COFOUNDED", "Основание"},
+		{"EMPLOYED_AT", "Трудоустройство"},
+		{"SEEDED", "Посевные инвестиции"},
+		{"ACQUIRED", "Приобретение"},
+		{"SOLD", "Продажа"},
+		{"LAUNCHED", "Запуск"},
+		{"VALUED", "Оценка"},
+		{"ESTABLISHED_IN", "Создание"},
+		{"MYSTERY_TYPE", "MYSTERY_TYPE"},
+	}
+	for _, c := range cases {
+		if got := relationTypeNoun(c.typ); got != c.want {
+			t.Errorf("relationTypeNoun(%q) = %q, want %q", c.typ, got, c.want)
+		}
 	}
 }

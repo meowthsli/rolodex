@@ -42,15 +42,16 @@ func EntityProfileMapper(row *sq.Row) EntityProfile {
 // Direction records how the entity participates ("outgoing" = entity is the
 // source, "incoming" = entity is the target).
 type profileRelation struct {
-	Type       string // relation type, e.g. FOUNDED, EMPLOYED_AT
-	Other      string // the display name of the counterpart entity
-	Direction  string // "outgoing" or "incoming"
-	Details    string // human-written details from relation properties
-	Quote      string // exact_quote from relation properties
-	Amount     string // amount from relation properties
-	When       string // when from relation properties
-	Confidence string // confidence measure from relation properties
-	SourceURL  string // page URL the relation was extracted from
+	Type       string   // relation type, e.g. FOUNDED, EMPLOYED_AT
+	Other      string   // the display name of the counterpart entity
+	OtherTypes []string // types of the counterpart entity (for coloring)
+	Direction  string   // "outgoing" or "incoming"
+	Details    string   // human-written details from relation properties
+	Quote      string   // exact_quote from relation properties
+	Amount     string   // amount from relation properties
+	When       string   // when from relation properties
+	Confidence string   // confidence measure from relation properties
+	SourceURL  string   // page URL the relation was extracted from
 }
 
 // relationProperties is the JSON shape stored in relations.properties for the
@@ -200,7 +201,7 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString("# " + ent.DisplayName + "\n\n")
+	b.WriteString("# " + colorName(ent.DisplayName, ent.Types) + "\n\n")
 	if len(ent.Types) > 0 {
 		b.WriteString("**Types:** " + strings.Join(ent.Types, ", ") + "\n")
 	}
@@ -219,7 +220,7 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 			uniq = append(uniq, a)
 		}
 		if len(uniq) > 0 {
-			b.WriteString("**Also known as:** ")
+			b.WriteString("**Известно также:** ")
 			b.WriteString(strings.Join(uniq, ", "))
 			b.WriteString("\n")
 		}
@@ -235,15 +236,15 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	}
 
 	if len(outgoing) > 0 {
-		b.WriteString("\n## Relations (outgoing)\n")
+		b.WriteString("\n## Важные связи (исходящие)\n")
 		for _, rel := range outgoing {
-			renderRelationSection(&b, ent.DisplayName, rel)
+			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
 		}
 	}
 	if len(incoming) > 0 {
-		b.WriteString("\n## Relations (incoming)\n")
+		b.WriteString("\n## Важные связи (входящие)\n")
 		for _, rel := range incoming {
-			renderRelationSection(&b, ent.DisplayName, rel)
+			renderRelationSection(&b, ent.DisplayName, ent.Types, rel)
 		}
 	}
 	if len(outgoing) == 0 && len(incoming) == 0 {
@@ -259,6 +260,7 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 		"SELECT r.id, r.type, r.properties, r.confidence, r.source_id, r.target_id, r.link_id, "+
 			"CASE WHEN r.source_id = {} THEN 'outgoing' ELSE 'incoming' END AS direction, "+
 			"CASE WHEN r.source_id = {} THEN t.display_name ELSE s.display_name END AS other, "+
+			"CASE WHEN r.source_id = {} THEN t.types ELSE s.types END AS other_types, "+
 			"lq.url AS src_url "+
 			"FROM relations r "+
 			"JOIN entities s ON s.id = r.source_id "+
@@ -270,6 +272,7 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 			var p profileRelation
 			p.Type = row.String("type")
 			p.Other = row.String("other")
+			p.OtherTypes = unmarshalTypes(row.String("other_types"))
 			p.Direction = row.String("direction")
 			p.SourceURL = row.String("src_url")
 			props := parseRelationProperties(row.String("properties"))
@@ -300,14 +303,18 @@ func parseRelationProperties(raw string) relationProperties {
 
 // renderRelationSection appends one relation to the profile as a short prose
 // block: the relationship, the details, and (when present) the exact quote and
-// the source page the fact was taken from.
-func renderRelationSection(b *strings.Builder, self string, rel profileRelation) {
-	// Humanize: "Alice FOUNDED Acme" / "Alice EMPLOYED_AT Acme".
-	sentence := self + " " + rel.Type
+// the source page the fact was taken from. Entity names are colored by type —
+// a Person name is red, any other type is green — so they stand out in the
+// rendered profile.
+func renderRelationSection(b *strings.Builder, self string, selfTypes []string, rel profileRelation) {
+	// Humanize: "Alice Основание Acme" / "Alice Трудоустройство Acme", with each
+	// entity name colored by its own type and the relation type as a neutral noun.
+	relNoun := relationTypeNoun(rel.Type)
+	var sentence string
 	if rel.Direction == "outgoing" {
-		sentence += " " + rel.Other
+		sentence = colorName(self, selfTypes) + " " + relNoun + " " + colorName(rel.Other, rel.OtherTypes)
 	} else {
-		sentence = rel.Other + " " + rel.Type + " " + self
+		sentence = colorName(rel.Other, rel.OtherTypes) + " " + relNoun + " " + colorName(self, selfTypes)
 	}
 	b.WriteString("\n### ")
 	b.WriteString(sentence)
@@ -316,6 +323,9 @@ func renderRelationSection(b *strings.Builder, self string, rel profileRelation)
 		b.WriteString(rel.Details)
 		b.WriteString("\n")
 	}
+	// When, amount and confidence (plus the source page) are grouped together
+	// inside one set of parentheses, so the metadata reads as a single compact
+	// attribution line.
 	var extras []string
 	if rel.When != "" && rel.When != "~" {
 		extras = append(extras, "when: "+rel.When)
@@ -326,19 +336,76 @@ func renderRelationSection(b *strings.Builder, self string, rel profileRelation)
 	if rel.Confidence != "" {
 		extras = append(extras, "confidence: "+rel.Confidence)
 	}
+	if rel.SourceURL != "" {
+		extras = append(extras, "source: "+rel.SourceURL)
+	}
 	if len(extras) > 0 {
-		b.WriteString("*")
+		b.WriteString("(")
 		b.WriteString(strings.Join(extras, " · "))
-		b.WriteString("*\n")
+		b.WriteString(")\n")
 	}
 	if rel.Quote != "" {
 		b.WriteString("\n> “")
 		b.WriteString(rel.Quote)
 		b.WriteString("”\n")
 	}
-	if rel.SourceURL != "" {
-		b.WriteString("\nSource: ")
-		b.WriteString(rel.SourceURL)
-		b.WriteString("\n")
+}
+
+// colorName wraps an entity name in an HTML span colored by its type: a Person
+// renders red, any other type renders green. Standard Markdown has no color
+// support, so the profile document carries this inline HTML and the dashboard
+// renders it with unsafe_allow_html. The name is HTML-escaped to avoid breaking
+// the span.
+func colorName(name string, types []string) string {
+	color := "#2e7d32" // green: default for non-Person entities
+	for _, t := range types {
+		if strings.EqualFold(t, "Person") {
+			color = "#d33" // red: Person entities
+			break
+		}
+	}
+	return "<span style='color:" + color + "'>" + htmlEscape(name) + "</span>"
+}
+
+// htmlEscape escapes <, >, & and quotes in a display name so it is safe to
+// place inside an inline HTML span.
+func htmlEscape(s string) string {
+	r := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	)
+	return r.Replace(s)
+}
+
+// relationTypeNoun maps a raw relation type (e.g. "INVESTED_IN", "FOUNDED") to
+// a neutral Russian noun so the profile prose reads naturally ("Name Инвестиции
+// Other"). Unknown types fall back to the raw token so nothing is ever hidden.
+func relationTypeNoun(typ string) string {
+	switch typ {
+	case "FOUNDED", "FOUNDED/COFOUNDED":
+		return "Основание"
+	case "COFOUNDED":
+		return "Сооснование"
+	case "ESTABLISHED_IN":
+		return "Создание"
+	case "INVESTED_IN":
+		return "Инвестиции"
+	case "SEEDED":
+		return "Посевные инвестиции"
+	case "EMPLOYED_AT":
+		return "Трудоустройство"
+	case "VALUED":
+		return "Оценка"
+	case "ACQUIRED":
+		return "Приобретение"
+	case "SOLD":
+		return "Продажа"
+	case "LAUNCHED":
+		return "Запуск"
+	default:
+		return typ
 	}
 }

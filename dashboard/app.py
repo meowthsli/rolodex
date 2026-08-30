@@ -152,6 +152,10 @@ def load_profiles() -> pd.DataFrame:
                ep.updated_at
         FROM entity_profiles ep
         JOIN entities e ON e.id = ep.entity_id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM json_each(e.types)
+            WHERE json_each.value IN ('Date', 'Product')
+        )
         ORDER BY e.display_name
     """
     return pd.read_sql_query(q, conn)
@@ -294,7 +298,7 @@ with tab_profiles:
         if name:
             row = df_prof[df_prof["name"] == name].iloc[0]
             st.caption(f"Updated {row['updated_at']}")
-            st.markdown(row["profile"])
+            st.markdown(row["profile"], unsafe_allow_html=True)
 
 with tab_passes:
     st.subheader("Passes")
