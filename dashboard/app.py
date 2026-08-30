@@ -145,6 +145,18 @@ def load_links() -> pd.DataFrame:
     return df
 
 
+def load_profiles() -> pd.DataFrame:
+    conn = connect()
+    q = """
+        SELECT ep.entity_id AS id, e.display_name AS name, ep.profile,
+               ep.updated_at
+        FROM entity_profiles ep
+        JOIN entities e ON e.id = ep.entity_id
+        ORDER BY e.display_name
+    """
+    return pd.read_sql_query(q, conn)
+
+
 st.set_page_config(page_title="Rolodex", layout="wide")
 
 st.title("Rolodex")
@@ -157,8 +169,8 @@ c3.metric("Passes", load_count("passes"))
 c4.metric("Links scraped", load_count("links"))
 c5.metric("Links pending", load_count("pending"))
 
-tab_entities, tab_relations, tab_graph, tab_passes, tab_links = st.tabs(
-    ["Entities", "Relations", "Graph", "Passes", "Links"]
+tab_entities, tab_relations, tab_graph, tab_profiles, tab_passes, tab_links = st.tabs(
+    ["Entities", "Relations", "Graph", "Profiles", "Passes", "Links"]
 )
 
 with tab_entities:
@@ -262,6 +274,27 @@ with tab_graph:
                          node_color=node_color, node_size=node_sizes,
                          font_size=8, arrows=True, arrowstyle="-|>")
         st.pyplot(fig)
+
+with tab_profiles:
+    st.subheader("Entity profiles")
+    df_prof = load_profiles()
+    if df_prof.empty:
+        st.info(
+            "No profiles yet. Build them with `make profiles` "
+            "(the rolodex service also rebuilds a profile on every entity event)."
+        )
+    else:
+        name = st.selectbox(
+            "Profile",
+            df_prof["name"].tolist(),
+            index=None,
+            placeholder="Choose an entity profile…",
+        )
+        st.caption(f"{len(df_prof)} profiles stored")
+        if name:
+            row = df_prof[df_prof["name"] == name].iloc[0]
+            st.caption(f"Updated {row['updated_at']}")
+            st.markdown(row["profile"])
 
 with tab_passes:
     st.subheader("Passes")

@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"flag"
 	"strconv"
 	"strings"
 	"syscall"
@@ -152,12 +152,21 @@ func main() {
 	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts",
 		facts.NewGoqiteEntityPublisher(db))
 
+	// Pre-computed long-text profiles, rebuilt for an entity whenever its graph
+	// changes (driven by the entity event handler below).
+	profiles := facts.NewProfilesRepository(db)
+
 	// Entity event handler: consume lifecycle events (create/merge) published by
-	// the facts machine and print each one. Cancelled on shutdown.
+	// the facts machine and rebuild the affected entity's profile, printing the
+	// update. Cancelled on shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go facts.StartEntityEventHandler(ctx, db, func(ev facts.EntityEvent) {
-		log.Printf("entity event: id=%d name=%q", ev.ID, ev.Name)
+		if text, err := profiles.RebuildProfile(ev.ID); err != nil {
+			log.Printf("rebuild profile id=%d: %v", ev.ID, err)
+		} else if text != "" {
+			log.Printf("entity event: rebuilt profile id=%d name=%q", ev.ID, ev.Name)
+		}
 	})
 
 	if v := os.Getenv("llm_chunk_size"); v != "" {

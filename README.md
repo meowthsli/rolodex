@@ -81,6 +81,34 @@ Flags:
 
 Prompts for `[y/N]` confirmation on stdin before merging. Both ids must exist.
 
+### build-profiles
+Pre-compute the long-text profile document for every entity and store it in the
+`entity_profiles` table (see the "Profiles" section below).
+
+Flags:
+- `-db` — database path (default `rolodex.db`).
+
+Safe to re-run: existing profiles are overwritten from the current graph.
+
+## Profiles
+
+An entity profile is a long, human-readable document describing one canonical
+entity: its types, known/promotion status and aliases, followed by every
+relation it participates in. Each relation is written out as a prose sentence
+(e.g. «DataArt SEEDED Tower Gate Capital»), including the supporting **exact
+quote** and the **source page URL** it was extracted from, plus the amount/when
+metadata stored on the relation.
+
+Profiles live in the `entity_profiles` table (`entity_id`, `profile`,
+`updated_at`). They are pre-calculated so reads don't recompute them:
+
+- Rebuild **everything** with `make profiles` (runs `build-profiles`), or
+  `reconcile` rebuilds all profiles after a reset/backfill/merge.
+- Rebuild **one** entity automatically: the rolodex service's goqite event
+  handler `StartEntityEventHandler` calls `RebuildProfile` whenever an entity
+  lifecycle event (create/merge) arrives, so an entity's profile is refreshed
+  as its graph changes.
+
 ## Dashboard (read-only)
 
 A Python + Streamlit web view of the knowledge graph. It only reads `rolodex.db`
@@ -100,7 +128,9 @@ Tabs:
 - **Entities** — table sorted by promotion score, plus a detail view with
   aliases and all in/out relations for a selected entity.
 - **Relations** — source / type / target listing.
-- **Graph** — spring-layout knowledge graph of the top-N entities.
+- **Graph** — spring-layout knowledge graph of the top-N entities, with an
+  entity selector that centers the view on the chosen entity.
+- **Profiles** — pick an entity to view its pre-computed profile document.
 - **Passes** — extraction passes with domain, errors, and source URL.
 - **Links** — the crawl queue with status (ok/error) per link.
 

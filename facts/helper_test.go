@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	sq "github.com/bokwoon95/sq"
+	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -54,4 +54,24 @@ func insertLink(t *testing.T, db *sql.DB) int {
 		t.Fatalf("last insert id: %v", err)
 	}
 	return id
+}
+
+// insertLinkPass inserts a link_queue row and a passes row (satisfying both the
+// relations pass_id and link_id foreign keys) and returns the two ids. Tests
+// that insert relations via insertRelation use these so PRAGMA foreign_keys=ON
+// is never violated by a zero id.
+func insertLinkPass(t *testing.T, db *sql.DB) (linkID, passID int) {
+	t.Helper()
+
+	linkID = insertLink(t, db)
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"INSERT INTO passes (link_queue_id, domain, chunk_index, content_hash, result) VALUES ({}, 'd', 0, 'h', {})",
+		linkID, "{}")); err != nil {
+		t.Fatalf("insert pass: %v", err)
+	}
+	passID, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT last_insert_rowid() AS id"), func(row *sq.Row) int { return row.Int("id") })
+	if err != nil {
+		t.Fatalf("last insert pass id: %v", err)
+	}
+	return linkID, passID
 }

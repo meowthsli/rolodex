@@ -58,6 +58,7 @@ func main() {
 
 	passes := facts.NewPassesRepository(db)
 	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
+	profiles := facts.NewProfilesRepository(db)
 	ctx := context.Background()
 
 	if *reset {
@@ -83,6 +84,14 @@ func main() {
 		log.Fatalf("global reconcile: %v", err)
 	}
 	log.Printf("merged %d duplicate entities", merged)
+
+	// Profiles are a denormalized snapshot of the graph; after a reset, backfill
+	// or merge the stored documents must be regenerated from the new state.
+	built, err := profiles.RebuildAll()
+	if err != nil {
+		log.Fatalf("rebuild profiles: %v", err)
+	}
+	log.Printf("built %d entity profiles", built)
 }
 
 // backfill extracts entities from every pass that has not been extracted yet.

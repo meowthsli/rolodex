@@ -1,0 +1,344 @@
+package facts
+
+import (
+	"database/sql"
+	"encoding/json"
+	"log"
+	"strings"
+	"time"
+
+	sq "github.com/bokwoon95/sq"
+)
+
+// ENTITY_PROFILES describes the entity_profiles table: one pre-computed
+// long-text document per canonical entity. The profile is a denormalized
+// snapshot of the entity and its graph, rebuilt whenever the graph changes.
+type ENTITY_PROFILES struct {
+	sq.TableStruct
+	EntityID  sq.NumberField `sq:"entity_id"`
+	Profile   sq.StringField `sq:"profile"`
+	UpdatedAt sq.TimeField   `sq:"updated_at"`
+}
+
+var EP = sq.New[ENTITY_PROFILES]("ep")
+
+// EntityProfile is the Go model for a row in entity_profiles.
+type EntityProfile struct {
+	EntityID  int
+	Profile   string
+	UpdatedAt time.Time
+}
+
+// EntityProfileMapper scans a row from entity_profiles into an EntityProfile.
+func EntityProfileMapper(row *sq.Row) EntityProfile {
+	var p EntityProfile
+	p.EntityID = row.Int("entity_id")
+	p.Profile = row.String("profile")
+	p.UpdatedAt = row.Time("updated_at")
+	return p
+}
+
+// profileRelation is the per-relation data used to render a profile section.
+// Direction records how the entity participates ("outgoing" = entity is the
+// source, "incoming" = entity is the target).
+type profileRelation struct {
+	Type       string // relation type, e.g. FOUNDED, EMPLOYED_AT
+	Other      string // the display name of the counterpart entity
+	Direction  string // "outgoing" or "incoming"
+	Details    string // human-written details from relation properties
+	Quote      string // exact_quote from relation properties
+	Amount     string // amount from relation properties
+	When       string // when from relation properties
+	Confidence string // confidence measure from relation properties
+	SourceURL  string // page URL the relation was extracted from
+}
+
+// relationProperties is the JSON shape stored in relations.properties for the
+// subset of fields rendered into a profile.
+type relationProperties struct {
+	Details    string `json:"details"`
+	ExactQuote string `json:"exact_quote"`
+	Amount     string `json:"amount"`
+	When       string `json:"when"`
+	Conf       string `json:"conf"`
+}
+
+// ProfilesRepository pre-computes and stores entity profile documents.
+type ProfilesRepository struct {
+	db *sql.DB
+}
+
+// NewProfilesRepository creates a profiles repository backed by the database.
+func NewProfilesRepository(db *sql.DB) *ProfilesRepository {
+	return &ProfilesRepository{db: db}
+}
+
+// GetProfile loads a stored profile for an entity. found is false when the
+// entity has no profile row yet (not yet built).
+func (r *ProfilesRepository) GetProfile(entityID int) (EntityProfile, bool, error) {
+	p, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM entity_profiles WHERE entity_id = {}", entityID), EntityProfileMapper)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return EntityProfile{}, false, nil
+		}
+		return EntityProfile{}, false, err
+	}
+	return p, true, nil
+}
+
+// ListProfiles returns every stored profile ordered by entity id, plus the
+// display name of each entity (for rendering in a dashboard).
+func (r *ProfilesRepository) ListProfiles() ([]struct {
+	EntityID  int
+	Name      string
+	Profile   string
+	UpdatedAt time.Time
+}, error) {
+	return sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT ep.entity_id, e.display_name AS name, ep.profile, ep.updated_at "+
+			"FROM entity_profiles ep JOIN entities e ON e.id = ep.entity_id "+
+			"ORDER BY ep.entity_id"),
+		func(row *sq.Row) struct {
+			EntityID  int
+			Name      string
+			Profile   string
+			UpdatedAt time.Time
+		} {
+			return struct {
+				EntityID  int
+				Name      string
+				Profile   string
+				UpdatedAt time.Time
+			}{EntityID: row.Int("entity_id"), Name: row.String("name"),
+				Profile: row.String("profile"), UpdatedAt: row.Time("updated_at")}
+		})
+}
+
+// DeleteProfile removes the stored profile for an entity, if any.
+func (r *ProfilesRepository) DeleteProfile(entityID int) error {
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"DELETE FROM entity_profiles WHERE entity_id = {}", entityID))
+	return err
+}
+
+// SaveProfile upserts the rendered profile document for an entity and bumps
+// its updated_at timestamp.
+func (r *ProfilesRepository) SaveProfile(entityID int, profile string) error {
+	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT INTO entity_profiles (entity_id, profile, updated_at) VALUES ({}, {}, CURRENT_TIMESTAMP) "+
+			"ON CONFLICT(entity_id) DO UPDATE SET profile = excluded.profile, updated_at = CURRENT_TIMESTAMP",
+		entityID, profile))
+	return err
+}
+
+// RebuildProfile re-renders and stores a single entity's profile from the
+// current graph and returns the rendered document. It is a no-op that returns
+// an empty string if the entity no longer exists.
+func (r *ProfilesRepository) RebuildProfile(entityID int) (string, error) {
+	text, err := r.BuildProfile(entityID)
+	if err != nil {
+		return "", err
+	}
+	if text == "" {
+		return "", nil
+	}
+	if err := r.SaveProfile(entityID, text); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+// RebuildAll renders and stores a profile for every entity in the graph,
+// returning the number rebuilt. It is safe to re-run; profiles that already
+// reflect the current graph are simply overwritten.
+func (r *ProfilesRepository) RebuildAll() (int, error) {
+	ents, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT id FROM entities"), func(row *sq.Row) int { return row.Int("id") })
+	if err != nil {
+		return 0, err
+	}
+	built := 0
+	for _, id := range ents {
+		text, rerr := r.RebuildProfile(id)
+		if rerr != nil {
+			log.Printf("rebuild profile entity %d: %v", id, rerr)
+			continue
+		}
+		if text != "" {
+			built++
+		}
+	}
+	return built, nil
+}
+
+// BuildProfile renders the long-text profile document for one entity without
+// persisting it. It returns an empty string when the entity does not exist.
+// The document describes the entity (types, known flag, aliases) and then every
+// relation it participates in, written in prose with the supporting exact quote
+// and the source page URL where the fact was extracted.
+func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
+	ent, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM entities WHERE id = {}", entityID), EntityMapper)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+
+	aliases, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT DISTINCT raw_name FROM entity_aliases WHERE entity_id = {} ORDER BY raw_name",
+		entityID), func(row *sq.Row) string { return row.String("raw_name") })
+	if err != nil {
+		return "", err
+	}
+
+	rels, err := r.profileRelations(entityID)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	b.WriteString("# " + ent.DisplayName + "\n\n")
+	if len(ent.Types) > 0 {
+		b.WriteString("**Types:** " + strings.Join(ent.Types, ", ") + "\n")
+	}
+	if ent.IsKnown {
+		b.WriteString("**Known:** yes\n")
+	}
+
+	if len(aliases) > 0 {
+		seen := make(map[string]bool)
+		var uniq []string
+		for _, a := range aliases {
+			if a == ent.DisplayName || seen[a] {
+				continue
+			}
+			seen[a] = true
+			uniq = append(uniq, a)
+		}
+		if len(uniq) > 0 {
+			b.WriteString("**Also known as:** ")
+			b.WriteString(strings.Join(uniq, ", "))
+			b.WriteString("\n")
+		}
+	}
+
+	var outgoing, incoming []profileRelation
+	for _, rel := range rels {
+		if rel.Direction == "outgoing" {
+			outgoing = append(outgoing, rel)
+		} else {
+			incoming = append(incoming, rel)
+		}
+	}
+
+	if len(outgoing) > 0 {
+		b.WriteString("\n## Relations (outgoing)\n")
+		for _, rel := range outgoing {
+			renderRelationSection(&b, ent.DisplayName, rel)
+		}
+	}
+	if len(incoming) > 0 {
+		b.WriteString("\n## Relations (incoming)\n")
+		for _, rel := range incoming {
+			renderRelationSection(&b, ent.DisplayName, rel)
+		}
+	}
+	if len(outgoing) == 0 && len(incoming) == 0 {
+		b.WriteString("\n*No relations recorded yet.*\n")
+	}
+	return b.String(), nil
+}
+
+// profileRelations loads every relation the entity participates in (as source
+// or target) with the counterpart name and the source page URL, in one query.
+func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, error) {
+	rows, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT r.id, r.type, r.properties, r.confidence, r.source_id, r.target_id, r.link_id, "+
+			"CASE WHEN r.source_id = {} THEN 'outgoing' ELSE 'incoming' END AS direction, "+
+			"CASE WHEN r.source_id = {} THEN t.display_name ELSE s.display_name END AS other, "+
+			"lq.url AS src_url "+
+			"FROM relations r "+
+			"JOIN entities s ON s.id = r.source_id "+
+			"JOIN entities t ON t.id = r.target_id "+
+			"LEFT JOIN link_queue lq ON lq.id = r.link_id "+
+			"WHERE r.source_id = {} OR r.target_id = {} "+
+			"ORDER BY r.id", entityID, entityID, entityID, entityID, entityID),
+		func(row *sq.Row) profileRelation {
+			var p profileRelation
+			p.Type = row.String("type")
+			p.Other = row.String("other")
+			p.Direction = row.String("direction")
+			p.SourceURL = row.String("src_url")
+			props := parseRelationProperties(row.String("properties"))
+			p.Details = props.Details
+			p.Quote = props.ExactQuote
+			p.Amount = props.Amount
+			p.When = props.When
+			p.Confidence = props.Conf
+			return p
+		})
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// parseRelationProperties decodes the JSON object stored in relations.properties
+// into the fields a profile renders. A malformed payload yields an empty struct
+// (the relation is still shown, just without details).
+func parseRelationProperties(raw string) relationProperties {
+	var p relationProperties
+	if raw == "" {
+		return p
+	}
+	_ = json.Unmarshal([]byte(raw), &p)
+	return p
+}
+
+// renderRelationSection appends one relation to the profile as a short prose
+// block: the relationship, the details, and (when present) the exact quote and
+// the source page the fact was taken from.
+func renderRelationSection(b *strings.Builder, self string, rel profileRelation) {
+	// Humanize: "Alice FOUNDED Acme" / "Alice EMPLOYED_AT Acme".
+	sentence := self + " " + rel.Type
+	if rel.Direction == "outgoing" {
+		sentence += " " + rel.Other
+	} else {
+		sentence = rel.Other + " " + rel.Type + " " + self
+	}
+	b.WriteString("\n### ")
+	b.WriteString(sentence)
+	b.WriteString("\n")
+	if rel.Details != "" {
+		b.WriteString(rel.Details)
+		b.WriteString("\n")
+	}
+	var extras []string
+	if rel.When != "" && rel.When != "~" {
+		extras = append(extras, "when: "+rel.When)
+	}
+	if rel.Amount != "" && rel.Amount != "~" {
+		extras = append(extras, "amount: "+rel.Amount)
+	}
+	if rel.Confidence != "" {
+		extras = append(extras, "confidence: "+rel.Confidence)
+	}
+	if len(extras) > 0 {
+		b.WriteString("*")
+		b.WriteString(strings.Join(extras, " · "))
+		b.WriteString("*\n")
+	}
+	if rel.Quote != "" {
+		b.WriteString("\n> “")
+		b.WriteString(rel.Quote)
+		b.WriteString("”\n")
+	}
+	if rel.SourceURL != "" {
+		b.WriteString("\nSource: ")
+		b.WriteString(rel.SourceURL)
+		b.WriteString("\n")
+	}
+}

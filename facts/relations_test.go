@@ -173,7 +173,8 @@ func TestReconcileRedirectsRelations(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Carol -> Bob, with Bob as the future loser.
-	if err := repo.insertRelation(carol.ID, bob.ID, "EMPLOYED_AT", "{}", "", 0, 0, 0); err != nil {
+	linkID, passID := insertLinkPass(t, db)
+	if err := repo.insertRelation(carol.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,7 +222,8 @@ func TestReconcileDropsRelationSelfLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Alice -> Bob: merging Bob into Alice makes this a self-loop.
-	if err := repo.insertRelation(alice.ID, bob.ID, "EMPLOYED_AT", "{}", "", 0, 0, 0); err != nil {
+	linkID, passID := insertLinkPass(t, db)
+	if err := repo.insertRelation(alice.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
 		t.Fatal(err)
 	}
 
