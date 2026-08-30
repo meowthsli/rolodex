@@ -85,6 +85,15 @@ func main() {
 	}
 	log.Printf("merged %d duplicate entities", merged)
 
+	// Dropping duplicate relations keeps the graph clean: relations that share
+	// the same endpoint pair and type with near-identical properties are
+	// consolidated onto the variant with the fullest text block.
+	deduped, err := entities.DedupeRelations(ctx)
+	if err != nil {
+		log.Fatalf("dedupe relations: %v", err)
+	}
+	log.Printf("dropped %d duplicate relations", deduped)
+
 	// Profiles are a denormalized snapshot of the graph; after a reset, backfill
 	// or merge the stored documents must be regenerated from the new state.
 	built, err := profiles.RebuildAll()

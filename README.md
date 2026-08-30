@@ -53,7 +53,8 @@ Usage: `add-content <file>`
 
 ### reconcile
 Backfill entity and relation extraction for every not-yet-processed pass and then
-merge duplicate entities until the graph is stable. Safe to re-run.
+merge duplicate entities until the graph is stable, followed by a relation
+dedup pass that drops duplicate relations. Safe to re-run.
 
 Usage: `reconcile [-reset]`
 - `-reset` — **destructive**: drops the entire knowledge graph (entities, their
@@ -62,6 +63,11 @@ Usage: `reconcile [-reset]`
   `yes` confirmation on stdin before wiping anything.
 - Logs every SQL query to stdout. Publishes entity lifecycle events to the goqite
   queue (requires `rolodex.db` to be migrated).
+
+During the relation dedup, two relations are considered duplicates when they
+refer to the same ordered entity pair with the same relation type and their
+properties — flattened into a text block — are near identical. The variant with
+the shorter text block is dropped and the fullest one is kept.
 
 ### clear-events
 Delete pending messages from the goqite entity event queue.

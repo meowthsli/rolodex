@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,9 @@ const (
 	// fuzzyThreshold is the minimum similarity score for a fuzzy (FTS5) match
 	// to be treated as the same entity.
 	fuzzyThreshold = 0.87
+	// relationDedupThreshold is the minimum token similarity between two
+	// relations' property text blocks for them to count as duplicates.
+	relationDedupThreshold = 0.9
 	// dateType is the only entity type that is exclusive: a Date entity may
 	// only merge with another Date entity, never with Person/Investor/etc.
 	dateType = "Date"
@@ -696,6 +700,128 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 		total++
 	}
 	return total, nil
+}
+
+// relationTextBlock flattens a relation's properties (details, exact quote,
+// amount, when, conf) plus its confidence column into one normalized string so
+// two relations can be compared field-by-field in a single token set.
+func relationTextBlock(props, confidence string) string {
+	p := parseRelationProperties(props)
+	var parts []string
+	if p.Details != "" {
+		parts = append(parts, p.Details)
+	}
+	if p.ExactQuote != "" {
+		parts = append(parts, p.ExactQuote)
+	}
+	if p.Amount != "" && p.Amount != "~" {
+		parts = append(parts, "amount: "+p.Amount)
+	}
+	if p.When != "" && p.When != "~" {
+		parts = append(parts, "when: "+p.When)
+	}
+	if p.Conf != "" {
+		parts = append(parts, "conf: "+p.Conf)
+	}
+	if confidence != "" {
+		parts = append(parts, "confidence: "+confidence)
+	}
+	return strings.Join(parts, " ")
+}
+
+// relationsClose reports whether two relations' property text blocks are close
+// enough to be duplicates. Two empty blocks are duplicates (they carry no
+// distinguishing detail), otherwise the blocks must pass the token-similarity
+// threshold.
+func relationsClose(a, b string) bool {
+	if a == "" && b == "" {
+		return true
+	}
+	if a == "" || b == "" {
+		return false
+	}
+	return similarity(a, b) >= relationDedupThreshold
+}
+
+// relationDedupGroup keys relations that may duplicate: the same ordered pair of
+// endpoints and the same relation type.
+type relationDedupGroup struct {
+	source, target int
+	relType        string
+}
+
+// DedupeRelations drops duplicate relations: rows that share the same ordered
+// entity pair and relation type and whose properties, flattened to a text block,
+// are very close. For each such pair the row with the shorter text block is
+// deleted (ties keep the earlier row). It returns the number of relations
+// deleted and publishes an entity event for every affected endpoint so
+// downstream consumers rebuild their state.
+func (r *EntitiesRepository) DedupeRelations(ctx context.Context) (int, error) {
+	rels, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM relations ORDER BY id"), RelationMapper)
+	if err != nil {
+		return 0, err
+	}
+
+	groups := make(map[relationDedupGroup][]*Relation)
+	for i := range rels {
+		k := relationDedupGroup{min(rels[i].SourceID, rels[i].TargetID), max(rels[i].SourceID, rels[i].TargetID), rels[i].Type}
+		groups[k] = append(groups[k], &rels[i])
+	}
+
+	affected := make(map[int]struct{})
+	deleted := 0
+	for _, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		// Map each relation to its text block and sort descending by block length
+		// so the greedy pass always keeps the fullest (longest) variant and drops
+		// any shorter one that is close enough to it.
+		type candidate struct {
+			rel *Relation
+			blk string
+		}
+		cands := make([]candidate, 0, len(group))
+		for _, rel := range group {
+			cands = append(cands, candidate{rel, relationTextBlock(rel.Properties, rel.Confidence)})
+		}
+		sort.Slice(cands, func(i, j int) bool { return len(cands[i].blk) > len(cands[j].blk) })
+
+		var kept []candidate
+		for _, c := range cands {
+			dup := false
+			for _, k := range kept {
+				if c.rel.ID >= 615 && c.rel.ID <= 618 {
+					fmt.Println(c.blk)
+					fmt.Println(k.blk)
+					fmt.Printf("Similarity = %f", similarity(c.blk, k.blk))
+				}
+				if relationsClose(c.blk, k.blk) {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+					"DELETE FROM relations WHERE id = {}", c.rel.ID)); err != nil {
+					return deleted, err
+				}
+				affected[c.rel.SourceID] = struct{}{}
+				affected[c.rel.TargetID] = struct{}{}
+				deleted++
+				continue
+			}
+			kept = append(kept, c)
+		}
+	}
+
+	for id := range affected {
+		if e, err := r.GetEntity(id); err == nil {
+			r.publishEvent(e.ID, e.DisplayName)
+		}
+	}
+	return deleted, nil
 }
 
 // reconcile folds two entities into one. The survivor is chosen by pickSurvivor
