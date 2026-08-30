@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	sq "github.com/bokwoon95/sq"
@@ -14,34 +15,34 @@ import (
 // independently and stored as its own row.
 type PASSES struct {
 	sq.TableStruct
-	ID           sq.NumberField
-	LinkQueueID  sq.NumberField `sq:"link_queue_id"`
-	Domain       sq.StringField `sq:"domain"`
-	ChunkIndex   sq.NumberField `sq:"chunk_index"`
-	ChunkStart   sq.NumberField `sq:"chunk_start"`
-	ChunkEnd     sq.NumberField `sq:"chunk_end"`
-	ChunkText    sq.StringField `sq:"chunk_text"` // the chunk text analyzed by this pass
-	ContentHash  sq.StringField `sq:"content_hash"`
-	Result       sq.StringField `sq:"result"`
-	CreatedAt    sq.TimeField   `sq:"created_at"`
-	Error        sq.StringField `sq:"error"`
+	ID          sq.NumberField
+	LinkQueueID sq.NumberField `sq:"link_queue_id"`
+	Domain      sq.StringField `sq:"domain"`
+	ChunkIndex  sq.NumberField `sq:"chunk_index"`
+	ChunkStart  sq.NumberField `sq:"chunk_start"`
+	ChunkEnd    sq.NumberField `sq:"chunk_end"`
+	ChunkText   sq.StringField `sq:"chunk_text"` // the chunk text analyzed by this pass
+	ContentHash sq.StringField `sq:"content_hash"`
+	Result      sq.StringField `sq:"result"`
+	CreatedAt   sq.TimeField   `sq:"created_at"`
+	Error       sq.StringField `sq:"error"`
 }
 
 var PS = sq.New[PASSES]("p")
 
 // Pass is the Go model for a row in passes.
 type Pass struct {
-	ID           int
-	LinkQueueID  int
-	Domain       string
-	ChunkIndex   int
-	ChunkStart   int
-	ChunkEnd     int
-	ChunkText    string // the chunk text analyzed by this pass
-	ContentHash  string
-	Result       string
-	CreatedAt    time.Time
-	Error        sql.NullString
+	ID          int
+	LinkQueueID int
+	Domain      string
+	ChunkIndex  int
+	ChunkStart  int
+	ChunkEnd    int
+	ChunkText   string // the chunk text analyzed by this pass
+	ContentHash string
+	Result      string
+	CreatedAt   time.Time
+	Error       sql.NullString
 }
 
 // PassMapper scans a row from the passes table into a Pass.
@@ -117,6 +118,17 @@ func (r *PassesRepository) ListPassesByLink(linkQueueID int, domain string) ([]P
 	return sq.FetchAll(r.db, sq.SQLite.Queryf(
 		"SELECT {*} FROM passes WHERE link_queue_id = {} AND domain = {} ORDER BY chunk_index",
 		linkQueueID, domain), PassMapper)
+}
+
+// LinkDomainHasPass reports whether any pass row (including a failed one) exists
+// for a link within a domain, i.e. whether that domain has already been analyzed
+// for the link.
+func (r *PassesRepository) LinkDomainHasPass(linkQueueID int, domain string) (bool, error) {
+	fmt.Printf("PASSES = %d DOMAIN= %s\n", linkQueueID, domain)
+	n, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT COUNT(*) AS c FROM passes WHERE link_queue_id = {} AND domain = {}",
+		linkQueueID, domain), func(row *sq.Row) int { return row.Int("c") })
+	return n > 0, err
 }
 
 // DeletePassesByLinkDomain removes all chunk passes for a link within a domain,

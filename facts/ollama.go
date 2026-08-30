@@ -62,10 +62,13 @@ func NewOllamaAnalyzer(apiURL, apiKey string) *OllamaAnalyzer {
 	}
 }
 
-func (a *OllamaAnalyzer) Analyze(ctx context.Context, content string) (string, error) {
+func (a *OllamaAnalyzer) Analyze(ctx context.Context, prompt, content string) (string, error) {
 	model := a.Model
 	if model == "" {
 		model = DefaultOllamaModel
+	}
+	if prompt == "" {
+		prompt = a.Prompt
 	}
 	client := a.Client
 	if client == nil {
@@ -77,7 +80,7 @@ func (a *OllamaAnalyzer) Analyze(ctx context.Context, content string) (string, e
 		Stream: false,
 		Format: "json",
 		Messages: []ollamaMessage{
-			{Role: "system", Content: a.Prompt},
+			{Role: "system", Content: prompt},
 			{Role: "user", Content: content},
 		},
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,7 +79,6 @@ type OpenAIAnalyzer struct {
 	APIURL string
 	APIKey string
 	Model  string
-	Prompt string
 	Client *http.Client
 }
 
@@ -87,15 +87,17 @@ func NewOpenAIAnalyzer(apiURL, apiKey string) *OpenAIAnalyzer {
 		APIURL: apiURL,
 		APIKey: apiKey,
 		Model:  DefaultOpenAIModel,
-		Prompt: DefaultAnalyzerPrompt,
 		Client: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
-func (a *OpenAIAnalyzer) Analyze(ctx context.Context, content string) (string, error) {
+func (a *OpenAIAnalyzer) Analyze(ctx context.Context, prompt, content string) (string, error) {
 	model := a.Model
 	if model == "" {
 		model = DefaultOpenAIModel
+	}
+	if prompt == "" {
+		return "", errors.New("Prompt is empty")
 	}
 	client := a.Client
 	if client == nil {
@@ -105,7 +107,7 @@ func (a *OpenAIAnalyzer) Analyze(ctx context.Context, content string) (string, e
 	reqBody := openAIChatRequest{
 		Model: model,
 		Messages: []oaMessage{
-			{Role: "system", Content: a.Prompt},
+			{Role: "system", Content: prompt},
 			{Role: "user", Content: content},
 		},
 	}

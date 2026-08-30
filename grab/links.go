@@ -2,6 +2,7 @@ package grab
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -20,6 +21,7 @@ type LINK_QUEUE struct {
 	AddedAt       sq.TimeField   `sq:"added_at"`
 	Error         sq.StringField `sq:"error"`
 	Generation    sq.NumberField `sq:"generation"`
+	Domains       sq.StringField `sq:"domains"`
 }
 
 var LQ = sq.New[LINK_QUEUE]("lq")
@@ -34,6 +36,7 @@ type LinkQueue struct {
 	AddedAt       sql.NullTime
 	Error         sql.NullString
 	Generation    int
+	Domains       []string
 }
 
 // Mapper scans a row from the link_queue table into a LinkQueue.
@@ -47,7 +50,32 @@ func Mapper(row *sq.Row) LinkQueue {
 	l.AddedAt = row.NullTime("added_at")
 	l.Error = row.NullString("error")
 	l.Generation = row.Int("generation")
+	l.Domains = parseDomains(row.String("domains"))
 	return l
+}
+
+// parseDomains decodes a link's domains JSON array into a slice of domain names.
+// A malformed or empty payload yields the default single "venture" domain, so a
+// link is always analyzed for at least one domain.
+func parseDomains(raw string) []string {
+	if raw == "" {
+		return []string{"venture"}
+	}
+	var d []string
+	if err := json.Unmarshal([]byte(raw), &d); err != nil || len(d) == 0 {
+		return []string{"venture"}
+	}
+	return d
+}
+
+// encodeDomains serializes a link's domain list into the JSON array stored in
+// link_queue.domains. An empty list defaults to the single "venture" domain.
+func encodeDomains(domains []string) string {
+	if len(domains) == 0 {
+		domains = []string{"venture"}
+	}
+	b, _ := json.Marshal(domains)
+	return string(b)
 }
 
 // LinksRepository aggregates the database handle and provides link_queue operations.
@@ -90,7 +118,41 @@ func (r *LinksRepository) NewLink(rawURL string, generation int) (LinkQueue, err
 	}
 
 	_, err = sq.Exec(r.db, sq.SQLite.Queryf(
-		"INSERT INTO link_queue (url, generation, added_at) VALUES ({}, {}, {})", url, generation, time.Now()))
+		"INSERT INTO link_queue (url, generation, added_at, domains) VALUES ({}, {}, {}, {})",
+		url, generation, time.Now(), encodeDomains(nil)))
+	if err != nil {
+		return LinkQueue{}, err
+	}
+
+	link, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM link_queue WHERE id = last_insert_rowid()"), Mapper)
+	if err != nil {
+		return LinkQueue{}, err
+	}
+	return link, nil
+}
+
+// NewLinkWithDomains is like NewLink but lets the caller set the analysis
+// domains for the link. The domains are stored as a JSON array on the row.
+func (r *LinksRepository) NewLinkWithDomains(rawURL string, generation int, domains []string) (LinkQueue, error) {
+	url := normalizeURL(rawURL)
+
+	existing, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM link_queue WHERE url = {}", url), Mapper)
+	if err == nil {
+		_, uerr := sq.Exec(r.db, sq.SQLite.Queryf(
+			"UPDATE link_queue SET added_at = {} WHERE id = {}", time.Now(), existing.ID))
+		if uerr != nil {
+			return LinkQueue{}, uerr
+		}
+		return existing, ErrLinkExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return LinkQueue{}, err
+	}
+
+	_, err = sq.Exec(r.db, sq.SQLite.Queryf(
+		"INSERT INTO link_queue (url, generation, added_at, domains) VALUES ({}, {}, {}, {})",
+		url, generation, time.Now(), encodeDomains(domains)))
 	if err != nil {
 		return LinkQueue{}, err
 	}

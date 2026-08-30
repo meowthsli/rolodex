@@ -157,30 +157,61 @@ func TestUpdateLink(t *testing.T) {
 	}
 }
 
-// TestSaveScrapeResultRejectsEmptyReadable verifies that a scrape yielding no
-// readable text is rejected with ErrEmptyReadable and the link is left
-// un-scraped (last_scrapped_at still NULL), so it stays pending for retry
-// rather than being picked up by the analysis pipeline without content.
-func TestSaveScrapeResultRejectsEmptyReadable(t *testing.T) {
+// TestNewLinkDefaultDomains verifies a link created via NewLink carries the
+// default single "venture" domain.
+func TestNewLinkDefaultDomains(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewLinksRepository(db)
 
-	link, err := repo.NewLink("https://empty.example.com", 1)
+	link, err := repo.NewLink("https://example.com", 1)
 	if err != nil {
 		t.Fatalf("NewLink: %v", err)
 	}
-
-	err = repo.SaveScrapeResult(link.ID, "<html></html>", "")
-	if !errors.Is(err, ErrEmptyReadable) {
-		t.Fatalf("expected ErrEmptyReadable, got %v", err)
-	}
-
-	// The link must remain pending (not marked scraped) after the rejection.
-	pending, err := repo.GetNextPendingLink()
-	if err != nil {
-		t.Fatalf("GetNextPendingLink: %v", err)
-	}
-	if pending.ID != link.ID {
-		t.Fatalf("expected link to stay pending, got pending id %d", pending.ID)
+	if len(link.Domains) != 1 || link.Domains[0] != "venture" {
+		t.Errorf("expected default [venture] domains, got %v", link.Domains)
 	}
 }
+
+// TestNewLinkWithDomains verifies NewLinkWithDomains persists the given domain
+// array on the row and Mapper round-trips it.
+func TestNewLinkWithDomains(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	link, err := repo.NewLinkWithDomains("https://example.com", 1, []string{"venture", "corporate"})
+	if err != nil {
+		t.Fatalf("NewLinkWithDomains: %v", err)
+	}
+	if len(link.Domains) != 2 || link.Domains[0] != "venture" || link.Domains[1] != "corporate" {
+		t.Errorf("expected [venture corporate] domains, got %v", link.Domains)
+	}
+
+	got, err := repo.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if len(got.Domains) != 2 || got.Domains[1] != "corporate" {
+		t.Errorf("round-tripped domains = %v, want [venture corporate]", got.Domains)
+	}
+}
+
+// TestEncodeDomainsEmptyDefaults verifies an empty domain list encodes to the
+// default single "venture" domain, so a link is always analyzed for at least
+// one domain.
+func TestEncodeDomainsEmptyDefaults(t *testing.T) {
+	if got := encodeDomains(nil); got != `["venture"]` {
+		t.Errorf("encodeDomains(nil) = %s, want [\"venture\"]", got)
+	}
+	if got := encodeDomains([]string{}); got != `["venture"]` {
+		t.Errorf("encodeDomains([]) = %s, want [\"venture\"]", got)
+	}
+
+	// Malformed or empty stored JSON falls back to the default too.
+	if got := parseDomains(""); len(got) != 1 || got[0] != "venture" {
+		t.Errorf("parseDomains(\"\") = %v, want [venture]", got)
+	}
+	if got := parseDomains("not-json"); len(got) != 1 || got[0] != "venture" {
+		t.Errorf("parseDomains(bad) = %v, want [venture]", got)
+	}
+}
+

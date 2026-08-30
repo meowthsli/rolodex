@@ -248,7 +248,7 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 		}
 	}
 	if len(outgoing) == 0 && len(incoming) == 0 {
-		b.WriteString("\n*Связей не зарегистрировано.*\n")
+		b.WriteString("\n*Связей не зарегистрировано*\n")
 	}
 	return b.String(), nil
 }

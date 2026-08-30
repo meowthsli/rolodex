@@ -3,9 +3,10 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
@@ -18,10 +19,14 @@ import (
 // add-link stores a seed URL into link_queue so the scraper can pick it up. It
 // runs pending migrations first so the database is initialized on its own.
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("usage: add-link <url>")
+	domainsFlag := flag.String("domains", "venture", "comma-separated analysis domains for the link")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		log.Fatal("usage: add-link [-domains venture,corporate] <url>")
 	}
-	rawURL := os.Args[1]
+	rawURL := args[0]
+	domains := splitDomains(*domainsFlag)
 
 	db, err := sql.Open("sqlite3", "rolodex.db?_foreign_keys=on")
 	if err != nil {
@@ -40,13 +45,29 @@ func main() {
 	}
 
 	repo := grab.NewLinksRepository(db)
-	link, err := repo.NewLink(rawURL, 1)
+	link, err := repo.NewLinkWithDomains(rawURL, 1, domains)
 	if err != nil {
 		if errors.Is(err, grab.ErrLinkExists) {
 			fmt.Printf("link already exists: id=%d url=%s\n", link.ID, link.URL)
 			return
 		}
-		log.Fatalf("NewLink: %v", err)
+		log.Fatalf("NewLinkWithDomains: %v", err)
 	}
-	fmt.Printf("added link id=%d url=%s\n", link.ID, link.URL)
+	fmt.Printf("added link id=%d url=%s domains=%v\n", link.ID, link.URL, domains)
+}
+
+// splitDomains splits a comma-separated domain list into a trimmed slice,
+// falling back to the single "venture" domain for an empty value.
+func splitDomains(s string) []string {
+	var out []string
+	for _, d := range strings.Split(s, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"venture"}
+	}
+	return out
 }

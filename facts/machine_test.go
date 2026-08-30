@@ -12,7 +12,7 @@ import (
 // returns the fixed answer (and error) it was configured with.
 func TestMockAnalyzerReturnsProgrammed(t *testing.T) {
 	m := MockAnalyzer{Result: `{"mock":true}`}
-	got, err := m.Analyze(context.Background(), "anything at all")
+	got, err := m.Analyze(context.Background(), "any prompt", "anything at all")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,13 +21,14 @@ func TestMockAnalyzerReturnsProgrammed(t *testing.T) {
 	}
 
 	mErr := MockAnalyzer{Err: sql.ErrNoRows}
-	if _, err := mErr.Analyze(context.Background(), ""); err != sql.ErrNoRows {
+	if _, err := mErr.Analyze(context.Background(), "p", ""); err != sql.ErrNoRows {
 		t.Errorf("expected sql.ErrNoRows, got %v", err)
 	}
 }
 
 // TestProcessOnceAnalyzesAndSaves verifies a link with readable text gets
-// analyzed and its result persisted as a pass with a matching content hash.
+// analyzed and its result persisted as a pass with a matching content hash and
+// the link's default "venture" domain.
 func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewPassesRepository(db)
@@ -39,8 +40,8 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":[{"id":"APPLE","type":"Organization","properties":{"name":"Apple"}}]}`}, 0, "facts",
-		NewGoqiteEntityPublisher(db))
+	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":[{"id":"APPLE","type":"Organization","properties":{"name":"Apple"}}]}`},
+		map[string]string{"venture": "v"}, 0, NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
 	}
@@ -58,9 +59,12 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 		t.Errorf("event[0].ID = 0, want a real entity id")
 	}
 
-	pass, err := repo.GetPassByLink(linkID, "facts", 0)
+	pass, err := repo.GetPassByLink(linkID, "venture", 0)
 	if err != nil {
 		t.Fatalf("get pass: %v", err)
+	}
+	if pass.Domain != "venture" {
+		t.Errorf("pass domain = %q, want venture", pass.Domain)
 	}
 	if pass.Result != `{"entities":[{"id":"APPLE","type":"Organization","properties":{"name":"Apple"}}]}` {
 		t.Errorf("stored result = %q", pass.Result)
@@ -71,7 +75,8 @@ func TestProcessOnceAnalyzesAndSaves(t *testing.T) {
 }
 
 // TestProcessOnceSkipsProcessedLink verifies an already-analyzed link is not
-// processed again, so re-running never creates a second pass for the same link.
+// processed again, so re-running never creates a second pass for the same link
+// and domain.
 func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
@@ -81,7 +86,7 @@ func TestProcessOnceSkipsProcessedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, 0, "test", NewGoqiteEntityPublisher(db))
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r1"}, map[string]string{"venture": "v"}, 0, NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -112,13 +117,75 @@ func TestProcessOnceSkipsNotScrapedLink(t *testing.T) {
 		t.Fatalf("set readable_text: %v", err)
 	}
 
-	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, 0, "facts", NewGoqiteEntityPublisher(db))
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, map[string]string{"venture": "v"}, 0, NewGoqiteEntityPublisher(db))
 	if err := m.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("process once: %v", err)
 	}
 
-	_, err := NewPassesRepository(db).GetPassByLink(linkID, "facts", 0)
+	_, err := NewPassesRepository(db).GetPassByLink(linkID, "venture", 0)
 	if err != sql.ErrNoRows {
 		t.Errorf("expected no pass for unscraped link, got %v", err)
 	}
 }
+
+// TestProcessOnceMultiDomain verifies a link with several domains gets a set of
+// passes for each of them, each carrying its own domain value.
+func TestProcessOnceMultiDomain(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewPassesRepository(db)
+	linkID := insertLink(t, db)
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"UPDATE link_queue SET readable_text = {}, last_scrapped_at = CURRENT_TIMESTAMP, domains = {} WHERE id = {}",
+		"some venture and corporate text", `["venture","corporate"]`, linkID)); err != nil {
+		t.Fatalf("set link fields: %v", err)
+	}
+
+	m := NewFactsMachine(db, MockAnalyzer{Result: `{"entities":[{"id":"X","type":"Organization","properties":{"name":"X"}}]}`},
+		map[string]string{"venture": "v", "corporate": "c"}, 0, NewGoqiteEntityPublisher(db))
+	if err := m.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("process once: %v", err)
+	}
+
+	for _, domain := range []string{"venture", "corporate"} {
+		pass, err := repo.GetPassByLink(linkID, domain, 0)
+		if err != nil {
+			t.Fatalf("get pass for domain %q: %v", domain, err)
+		}
+		if pass.Domain != domain {
+			t.Errorf("pass domain = %q, want %q", pass.Domain, domain)
+		}
+	}
+}
+
+// TestProcessOnceSkipsUnknownDomain verifies that a link whose only domain has
+// no registered prompt is skipped (no pass is created).
+func TestProcessOnceSkipsUnknownDomain(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewPassesRepository(db)
+	linkID := insertLink(t, db)
+	if _, err := sq.Exec(db, sq.SQLite.Queryf(
+		"UPDATE link_queue SET readable_text = {}, last_scrapped_at = CURRENT_TIMESTAMP, domains = {} WHERE id = {}",
+		"some text", `["mystery"]`, linkID)); err != nil {
+		t.Fatalf("set link fields: %v", err)
+	}
+
+	m := NewFactsMachine(db, MockAnalyzer{Result: "r"}, map[string]string{"venture": "v"}, 0, NewGoqiteEntityPublisher(db))
+	if err := m.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("process once: %v", err)
+	}
+
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM passes WHERE link_queue_id = {}", linkID),
+		func(row *sq.Row) int { return row.Int("c") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("expected no pass for unknown domain, got %d", n)
+	}
+	// The unknown-domain link must not appear as processed, so a later run with
+	// a matching prompt picks it up; verify no pass and no pending-blocker.
+	if _, err := repo.GetPassByLink(linkID, "mystery", 0); err != sql.ErrNoRows {
+		t.Errorf("expected no pass for the mystery domain, got %v", err)
+	}
+}
+

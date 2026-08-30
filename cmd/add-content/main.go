@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
@@ -22,10 +24,14 @@ import (
 // link URL, and the (readable) file contents are written to both the content
 // and readable_text columns.
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("usage: add-content <file>")
+	domainsFlag := flag.String("domains", "venture", "comma-separated analysis domains for the link")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		log.Fatal("usage: add-content [-domains venture,corporate] <file>")
 	}
-	path := os.Args[1]
+	path := args[0]
+	domains := splitDomains(*domainsFlag)
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -52,14 +58,14 @@ func main() {
 
 	// Use the file path plus a small random suffix as the link URL so each run
 	// produces a distinct (non-deduplicated) link. On the rare rediscovery
-	// NewLink returns the existing row together with ErrLinkExists, which we
-	// ignore so the content is refreshed below.
+	// NewLinkWithDomains returns the existing row together with ErrLinkExists,
+	// which we ignore so the content is refreshed below.
 	buf := make([]byte, 3)
 	rand.Read(buf)
 	suffix := hex.EncodeToString(buf)
-	link, err := repo.NewLink(fmt.Sprintf("%s-%s", path, suffix), 1)
+	link, err := repo.NewLinkWithDomains(fmt.Sprintf("%s-%s", path, suffix), 1, domains)
 	if err != nil && !errors.Is(err, grab.ErrLinkExists) {
-		log.Fatalf("NewLink: %v", err)
+		log.Fatalf("NewLinkWithDomains: %v", err)
 	}
 
 	text := string(raw)
@@ -67,5 +73,21 @@ func main() {
 		log.Fatalf("SaveScrapeResult: %v", err)
 	}
 
-	fmt.Printf("added content from %s as link id=%d\n", path, link.ID)
+	fmt.Printf("added content from %s as link id=%d domains=%v\n", path, link.ID, domains)
+}
+
+// splitDomains splits a comma-separated domain list into a trimmed slice,
+// falling back to the single "venture" domain for an empty value.
+func splitDomains(s string) []string {
+	var out []string
+	for _, d := range strings.Split(s, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"venture"}
+	}
+	return out
 }

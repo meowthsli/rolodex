@@ -149,7 +149,10 @@ func main() {
 	if llmURL == "" || llmKey == "" {
 		log.Fatal("llm_api_url and llm_api_key must be set (in .env or environment)")
 	}
-	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), 1*time.Second, "facts",
+	// The default venture-analysis prompt is registered under the "venture"
+	// domain. Links whose domain has no registered prompt are skipped.
+	prompts := map[string]string{"venture": facts.DefaultAnalyzerPrompt}
+	fm := facts.NewFactsMachine(db, facts.NewOpenAIAnalyzer(llmURL, llmKey), prompts, 1*time.Second,
 		facts.NewGoqiteEntityPublisher(db))
 
 	// Pre-computed long-text profiles, rebuilt for an entity whenever its graph

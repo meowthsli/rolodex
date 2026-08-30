@@ -24,6 +24,10 @@ The long-running service: scrapes pending links, feeds readable text to the LLM
 for entity and relation extraction, reconciles entities (and redirects their
 relations onto the survivor), and publishes entity lifecycle events.
 
+A link is analyzed once per analysis **domain** it carries; each domain uses its
+own system prompt (see the "Domains" section below). Links without a prompt for
+a domain skip that domain.
+
 Flags:
 - `-sqlog` — log every SQL query (with timing) to stdout. Off by default.
 - `-nolinks` — dry-run spider: print discovered links to stdout instead of
@@ -40,14 +44,15 @@ Files / env read:
 ### add-link
 Seed the crawler with a starting URL.
 
-Usage: `add-link <url>`
+Usage: `add-link [-domains venture,corporate] <url>`
+- `-domains` — comma-separated analysis domains for the link (default `venture`).
 - `<url>` — URL to enqueue (deduplicated by normalized form; rediscovery
   re-queues the existing row).
 
 ### add-content
 Inject a local file into `link_queue` as if it had been scraped from the web.
 
-Usage: `add-content <file>`
+Usage: `add-content [-domains venture,corporate] <file>`
 - `<file>` — path to a text file; its contents become both the raw `content` and
   the `readable_text`. A random suffix is added to the URL so each run is distinct.
 
@@ -95,6 +100,22 @@ Flags:
 - `-db` — database path (default `rolodex.db`).
 
 Safe to re-run: existing profiles are overwritten from the current graph.
+
+## Domains
+
+Each link in `link_queue` carries an array of analysis **domains** (the `domains`
+column, a JSON array of strings, default `["venture"]`). When the facts machine
+processes a link it runs the content once per domain, storing each analysis as a
+separate pass keyed by `(link, domain, chunk)`.
+
+Which domains are actually analyzed is governed by a `domain → prompt` map in the
+rolodex service. A link's domain is analyzed only if a prompt is registered for
+it and that domain has no pass yet; a domain without a registered prompt is
+skipped outright. The current default venture-analysis prompt is registered under
+the `"venture"` key, so a plain link is analyzed with that prompt.
+
+Domains are set when a link is created (`add-link` / `add-content` `-domains`
+flag) and default to `["venture"]` when not specified.
 
 ## Profiles
 
