@@ -28,9 +28,13 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) < 1 {
-		log.Fatal("usage: add-content [-domains venture,corporate] <file>")
+		log.Fatal("usage: add-content [-domains venture,corporate] <file> [url]")
 	}
 	path := args[0]
+	var explicitURL string
+	if len(args) >= 2 {
+		explicitURL = args[1]
+	}
 	domains := splitDomains(*domainsFlag)
 
 	raw, err := os.ReadFile(path)
@@ -56,14 +60,19 @@ func main() {
 
 	repo := grab.NewLinksRepository(db)
 
-	// Use the file path plus a small random suffix as the link URL so each run
-	// produces a distinct (non-deduplicated) link. On the rare rediscovery
-	// NewLinkWithDomains returns the existing row together with ErrLinkExists,
-	// which we ignore so the content is refreshed below.
-	buf := make([]byte, 3)
-	rand.Read(buf)
-	suffix := hex.EncodeToString(buf)
-	link, err := repo.NewLinkWithDomains(fmt.Sprintf("%s-%s", path, suffix), 1, domains)
+	// When no URL is supplied, use the file path plus a small random suffix as
+	// the link URL so each run produces a distinct (non-deduplicated) link. When
+	// a URL is supplied it is used verbatim (rediscovery returns the existing
+	// row together with ErrLinkExists, which we ignore so the content is
+	// refreshed below).
+	url := explicitURL
+	if url == "" {
+		buf := make([]byte, 3)
+		rand.Read(buf)
+		suffix := hex.EncodeToString(buf)
+		url = fmt.Sprintf("%s-%s", path, suffix)
+	}
+	link, err := repo.NewLinkWithDomains(url, 1, domains)
 	if err != nil && !errors.Is(err, grab.ErrLinkExists) {
 		log.Fatalf("NewLinkWithDomains: %v", err)
 	}
@@ -73,7 +82,7 @@ func main() {
 		log.Fatalf("SaveScrapeResult: %v", err)
 	}
 
-	fmt.Printf("added content from %s as link id=%d domains=%v\n", path, link.ID, domains)
+	fmt.Printf("added content from %s as link id=%d domains=%v url=%s\n", path, link.ID, domains, url)
 }
 
 // splitDomains splits a comma-separated domain list into a trimmed slice,

@@ -52,7 +52,7 @@ Usage: `add-link [-domains venture,corporate] <url>`
 ### add-content
 Inject a local file into `link_queue` as if it had been scraped from the web.
 
-Usage: `add-content [-domains venture,corporate] <file>`
+Usage: `add-content [-domains venture,corporate] <file> [url]`
 - `<file>` — path to a text file; its contents become both the raw `content` and
   the `readable_text`. A random suffix is added to the URL so each run is distinct.
 
