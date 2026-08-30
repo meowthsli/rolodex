@@ -610,3 +610,159 @@ func TestScraperNoLinksDryRun(t *testing.T) {
 		t.Fatalf("expected only the seed link in queue, got %d rows: %v", len(links), links)
 	}
 }
+
+// TestScraperFollowsRedirect verifies that a 301/302 redirect is followed: the
+// content stored is the final page's body, and discovered links resolve against
+// the FINAL URL (not the stale original), so a relative href on the redirected
+// page produces the address under the real page's path.
+func TestScraperFollowsRedirect(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/old/dir":
+			http.Redirect(w, r, "/new/loc", http.StatusMovedPermanently)
+		case "/new/loc":
+			fmt.Fprintf(w, `<html><body>%s<a href="subpage">go</a></body></html>`,
+				strings.Repeat("word ", 200))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	seed, err := repo.NewLink(server.URL+"/old/dir", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce: %v", err)
+	}
+
+	got, err := repo.GetLink(seed.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if got.Error.Valid {
+		t.Fatalf("redirected link recorded an error: %q", got.Error.String)
+	}
+	if !strings.Contains(got.Content, "subpage") {
+		t.Errorf("stored content should be the final page body, got %q", got.Content)
+	}
+
+	host := strings.TrimPrefix(server.URL, "http://")
+	// The final page lives at /new/loc, so its relative href "subpage" must
+	// resolve to /new/subpage, never the outdated /old/subpage.
+	gotURLs := make(map[string]bool)
+	for _, l := range listAll(t, repo) {
+		gotURLs[l.URL] = true
+	}
+	if !gotURLs[host+"/new/subpage"] {
+		t.Errorf("expected discovered link %q, got %v", host+"/new/subpage", gotURLs)
+	}
+	if gotURLs[host+"/old/subpage"] {
+		t.Errorf("discovered link resolved against the stale original URL: %v", gotURLs)
+	}
+}
+
+// listAll fetches every row in link_queue, failing the test on error.
+func listAll(t *testing.T, repo *LinksRepository) []LinkQueue {
+	t.Helper()
+	links, err := repo.ListLinks()
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	return links
+}
+
+// TestScraperRedirectLoop verifies an endless 3xx cycle (A -> B -> A) is
+// detected and recorded as an error rather than being chased forever: the link
+// gets a bounded error message, is stamped scraped (so it is not retried) and
+// stores no content.
+func TestScraperRedirectLoop(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a":
+			http.Redirect(w, r, "/b", http.StatusMovedPermanently)
+		case "/b":
+			http.Redirect(w, r, "/a", http.StatusMovedPermanently)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	link, err := repo.NewLink(server.URL+"/a", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce should record the loop as an error, got %v", err)
+	}
+
+	got, err := repo.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if !got.Error.Valid || !strings.Contains(got.Error.String, "redirect loop") {
+		t.Fatalf("error = %q, want it to mention the redirect loop", got.Error.String)
+	}
+	if !got.LastScrappedAt.Valid {
+		t.Errorf("loop link should be stamped scraped so it is not retried")
+	}
+	if got.Content != "" {
+		t.Errorf("loop link must not store content, got %d bytes", len(got.Content))
+	}
+}
+
+// TestScraperRedirectDepthCapped verifies the redirect follower gives up after
+// maxRedirects hops instead of chasing an arbitrarily long (but acyclic) chain:
+// the link records a bounded-depth error and is not retried.
+func TestScraperRedirectDepthCapped(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewLinksRepository(db)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /p0 -> /p1 -> ... -> /p11: longer than maxRedirects (10).
+		var i int
+		if _, err := fmt.Sscanf(r.URL.Path, "/p%d", &i); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if i >= maxRedirects+1 {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/p%d", i+1), http.StatusMovedPermanently)
+	}))
+	defer server.Close()
+
+	link, err := repo.NewLink(server.URL+"/p0", 1)
+	if err != nil {
+		t.Fatalf("NewLink: %v", err)
+	}
+
+	scraper := NewScraper(repo, &http.Client{}, time.Hour)
+	if err := scraper.scrapeOnce(); err != nil {
+		t.Fatalf("scrapeOnce should record the depth error, got %v", err)
+	}
+
+	got, err := repo.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if !got.Error.Valid || !strings.Contains(got.Error.String, "redirect") {
+		t.Fatalf("error = %q, want a redirect depth error", got.Error.String)
+	}
+	if !got.LastScrappedAt.Valid {
+		t.Errorf("depth-capped link should be stamped scraped so it is not retried")
+	}
+}

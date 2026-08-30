@@ -34,8 +34,19 @@ type Scraper struct {
 // real, fetchable page. Shorter links are neither fetched nor extracted.
 const minURLLen = 6
 
-// NewScraper builds a Scraper. A nil client defaults to http.DefaultClient,
-// and a non-positive tick defaults to 5 seconds.
+// maxRedirects is the largest number of hops the scraper will follow before it
+// gives up. The bound doubles as the safety net that stops a redirect cycle
+// (A -> B -> A -> ...) from looping forever even before the explicit loop check
+// below has a chance to notice the repeated URL.
+const maxRedirects = 10
+
+// errRedirectLoop is returned by the scraper's CheckRedirect when the same URL
+// reappears in the redirect chain, signaling an endless 3xx cycle. LinkQueue
+// records it as a scrape error so the offending link is not retried.
+var errRedirectLoop = errors.New("redirect loop detected")
+
+// NewScraper builds a Scraper. A nil client defaults to http.DefaultClient, and
+// a non-positive tick defaults to 5 seconds.
 func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) *Scraper {
 	if client == nil {
 		client = http.DefaultClient
@@ -43,6 +54,27 @@ func NewScraper(repo *LinksRepository, client *http.Client, tick time.Duration) 
 	if tick <= 0 {
 		tick = 5 * time.Second
 	}
+	// Wrap the caller's client so redirect following is bounded and loop-safe:
+	// never chase more than maxRedirects hops, and abort as soon as a URL
+	// already seen in the chain is requested again (A -> B -> A). The original
+	// CheckRedirect, if any, still gets a chance to veto the hop.
+	wrapped := *client
+	prevCheckRedirect := wrapped.CheckRedirect
+	wrapped.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("redirect: stopped after %d requests", maxRedirects)
+		}
+		for _, prev := range via {
+			if req.URL.String() == prev.URL.String() {
+				return errRedirectLoop
+			}
+		}
+		if prevCheckRedirect != nil {
+			return prevCheckRedirect(req, via)
+		}
+		return nil
+	}
+	client = &wrapped
 	return &Scraper{repo: repo, client: client, tick: tick}
 }
 
@@ -165,13 +197,11 @@ func (s *Scraper) scrapeOnce() error {
 
 	var resp *http.Response
 	var getErr error
-	chosenScheme := ""
 	fetchedURL := ""
 	for _, scheme := range []string{"https", "http"} {
 		fetchedURL = scheme + "://" + link.URL
 		resp, getErr = s.client.Get(fetchedURL)
 		if getErr == nil {
-			chosenScheme = scheme
 			break
 		}
 	}
@@ -181,7 +211,20 @@ func (s *Scraper) scrapeOnce() error {
 	}
 	defer resp.Body.Close()
 
-	log.Printf("scraping link id=%d url=%s", link.ID, fetchedURL)
+	// The page that actually answered may differ from the requested URL: 3xx
+	// redirects (301/302) are followed automatically and resp.Request.URL is the
+	// final hop. Use it as the base for readability extraction and link
+	// discovery so relative URLs on the redirected page resolve against the page
+	// that really served the content, not the stale original address.
+	base := fetchedURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		base = resp.Request.URL.String()
+	}
+	if base != fetchedURL {
+		log.Printf("scraping link id=%d url=%s (followed redirect from %s)", link.ID, base, fetchedURL)
+	} else {
+		log.Printf("scraping link id=%d url=%s", link.ID, fetchedURL)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -191,17 +234,21 @@ func (s *Scraper) scrapeOnce() error {
 
 	content := string(body)
 
+	if strings.Contains(content, "qauth.js") {
+		// TODO: add chrome in headless mode
+	}
+
 	// Too small to be useful: don't store content (and don't spider it). Mark
 	// the link with an error so it is not re-fetched or analyzed.
 	const minContentBytes = 1024
 	if len(content) < minContentBytes {
+
 		log.Printf("scraped link id=%d: content %d bytes < %d; skipping storage",
 			link.ID, len(content), minContentBytes)
 		return s.repo.SaveScrapeError(link.ID, "content too small (<1KB)")
 	}
 
 	// Spider: extract readable text and discover links, then persist once.
-	base := chosenScheme + "://" + link.URL
 	readable := ""
 	if baseURL, err := url.Parse(base); err == nil {
 		if r, rerr := extractReadable(baseURL, content); rerr == nil {
