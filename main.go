@@ -23,6 +23,7 @@ import (
 
 	facts "meo.ru/rolodex/facts"
 	grab "meo.ru/rolodex/grab"
+	profs "meo.ru/rolodex/profiles"
 )
 
 // loadEnvFile parses a KEY=VALUE .env file and exports each entry into the
@@ -113,18 +114,6 @@ func main() {
 	// shared by both the scraper and the analysis pipeline below.
 	repo := grab.NewLinksRepository(db)
 
-	// NewLink dedupes by normalized URL; an already-existing link is not an
-	// error, we simply skip it. Left commented as an example of how to seed a
-	// starting URL.
-	//_, err = repo.NewLink("https://github.com/Gelembjuk/articletext")
-	//if err != nil && !errors.Is(err, grab.ErrLinkExists) {
-	//	log.Fatal(err)
-	//}
-
-	// Snapshot the queue before processing starts, for visibility.
-	links, err := repo.ListLinks()
-	fmt.Printf("link_queue rows: %d\n", len(links))
-
 	// Scraper: every tick it picks the next unscraped link, fetches its page
 	// over HTTP, extracts readable text, stores it, and discovers new links.
 	scraper := grab.NewScraper(repo, &http.Client{}, 5*time.Second)
@@ -157,13 +146,14 @@ func main() {
 
 	// Pre-computed long-text profiles, rebuilt for an entity whenever its graph
 	// changes (driven by the entity event handler below).
-	profiles := facts.NewProfilesRepository(db)
+	profiles := profs.NewProfilesRepository(db)
 
 	// Entity event handler: consume lifecycle events (create/merge) published by
 	// the facts machine and rebuild the affected entity's profile, printing the
 	// update. Cancelled on shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
 	go facts.StartEntityEventHandler(ctx, db, func(ev facts.EntityEvent) {
 		if text, err := profiles.RebuildProfile(ev.ID); err != nil {
 			log.Printf("rebuild profile id=%d: %v", ev.ID, err)
@@ -192,7 +182,4 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-
-	links, err = repo.ListLinks()
-	fmt.Printf("link_queue rows: %d\n", len(links))
 }

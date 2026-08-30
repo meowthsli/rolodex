@@ -1,8 +1,12 @@
-package facts
+// Package profiles pre-computes and serves read-only entity profile documents:
+// a long-form text snapshot of a single canonical entity and its surrounding
+// knowledge graph, rendered for display (e.g. in the dashboard). Production code
+// reads from the same sqlite database as the facts package and reuses facts'
+// entity model.
+package profiles
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	sq "github.com/bokwoon95/sq"
+	facts "meo.ru/rolodex/facts"
 )
 
 // ENTITY_PROFILES describes the entity_profiles table: one pre-computed
@@ -55,16 +60,6 @@ type profileRelation struct {
 	Confidence string   // confidence measure from relation properties
 	SourceURL  string   // page URL the relation was extracted from
 	ChunkText  string   // full text of the pass chunk the relation came from
-}
-
-// relationProperties is the JSON shape stored in relations.properties for the
-// subset of fields rendered into a profile.
-type relationProperties struct {
-	Details    string `json:"details"`
-	ExactQuote string `json:"exact_quote"`
-	Amount     string `json:"amount"`
-	When       string `json:"when"`
-	Conf       string `json:"conf"`
 }
 
 // ProfilesRepository pre-computes and stores entity profile documents.
@@ -183,7 +178,7 @@ func (r *ProfilesRepository) RebuildAll() (int, error) {
 // and the source page URL where the fact was extracted.
 func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	ent, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
-		"SELECT {*} FROM entities WHERE id = {}", entityID), EntityMapper)
+		"SELECT {*} FROM entities WHERE id = {}", entityID), facts.EntityMapper)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", nil
@@ -278,11 +273,11 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 			var p profileRelation
 			p.Type = row.String("type")
 			p.Other = row.String("other")
-			p.OtherTypes = unmarshalTypes(row.String("other_types"))
+			p.OtherTypes = facts.UnmarshalTypes(row.String("other_types"))
 			p.Direction = row.String("direction")
 			p.SourceURL = row.String("src_url")
 			p.ChunkText = row.String("chunk_text")
-			props := parseRelationProperties(row.String("properties"))
+			props := facts.ParseRelationProperties(row.String("properties"))
 			p.Details = props.Details
 			p.Quote = props.ExactQuote
 			p.Amount = props.Amount
@@ -296,26 +291,14 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 	return rows, nil
 }
 
-// parseRelationProperties decodes the JSON object stored in relations.properties
-// into the fields a profile renders. A malformed payload yields an empty struct
-// (the relation is still shown, just without details).
-func parseRelationProperties(raw string) relationProperties {
-	var p relationProperties
-	if raw == "" {
-		return p
-	}
-	_ = json.Unmarshal([]byte(raw), &p)
-	return p
-}
-
 // renderRelationSection appends one relation to the profile as a short prose
 // block: the relationship, the details, and (when present) the exact quote and
 // the source page the fact was taken from. Entity names are colored by type —
 // a Person name is red, any other type is green — so they stand out in the
 // rendered profile.
 func renderRelationSection(b *strings.Builder, self string, selfTypes []string, rel profileRelation, fn *footnoteCollector) {
-	// Humanize: "Alice Основание Acme" / "Alice Трудоустройство Acme", with each
-	// entity name colored by its own type and the relation type as a neutral noun.
+	// Humanize: "Alice Основание Acme", with each entity name colored by its own
+	// type and the relation type as a neutral noun.
 	relNoun := relationTypeNoun(rel.Type)
 	var sentence string
 	if rel.Direction == "outgoing" {

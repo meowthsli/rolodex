@@ -10,7 +10,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
 
-	"meo.ru/rolodex/facts"
+	profs "meo.ru/rolodex/profiles"
 )
 
 // build-profiles pre-computes the long-text profile document for every entity
@@ -36,7 +36,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	profiles := facts.NewProfilesRepository(db)
+	profiles := profs.NewProfilesRepository(db)
 	built, err := profiles.RebuildAll()
 	if err != nil {
 		log.Fatalf("rebuild profiles: %v", err)

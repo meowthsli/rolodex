@@ -1,51 +1,109 @@
-package facts
+package profiles
 
 import (
-	"context"
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	sq "github.com/bokwoon95/sq"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	_ "github.com/mattn/go-sqlite3"
+	facts "meo.ru/rolodex/facts"
 )
+
+// setupTestDB spins up a fresh, migrated SQLite database in a temp dir and
+// returns a handle to it, mirroring the facts package's test setup.
+func setupTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	m, err := migrate.New("file://../migrations", "sqlite3://"+dbPath)
+	if err != nil {
+		t.Fatalf("migrate new: %v", err)
+	}
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		t.Fatalf("migrate up: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	facts.InitFTS(db)
+
+	return db
+}
+
+// insertLink inserts a minimal link_queue row and returns its id.
+func insertLink(t *testing.T, db *sql.DB) int {
+	t.Helper()
+
+	res, err := sq.Exec(db, sq.SQLite.Queryf(
+		"INSERT INTO link_queue (url) VALUES ({})", "https://example.com/"+t.Name()))
+	if err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+	return int(res.LastInsertId)
+}
+
+// insertPass inserts a passes row for the given link/chunk text and returns it
+// (its ID and LinkQueueID satisfy the relations foreign keys).
+func insertPass(t *testing.T, db *sql.DB, linkID, chunkIndex int, chunkText string) facts.Pass {
+	t.Helper()
+
+	p, err := facts.NewPassesRepository(db).UpsertPass(linkID, "d", chunkIndex, 0, len([]byte(chunkText)), chunkText, "h", "{}")
+	if err != nil {
+		t.Fatalf("upsert pass: %v", err)
+	}
+	return p
+}
+
+// insertRelation inserts a relations row backed by the given pass and link.
+func insertRelation(t *testing.T, db *sql.DB, src, dst int, typ, props, conf string, passID, linkID int) {
+	t.Helper()
+
+	_, err := sq.Exec(db, sq.SQLite.Queryf(
+		"INSERT INTO relations (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
+			"VALUES ({}, {}, {}, {}, {}, {}, {}, 0)",
+		src, dst, typ, props, conf, passID, linkID))
+	if err != nil {
+		t.Fatalf("insert relation: %v", err)
+	}
+}
 
 // TestRebuildProfileRendersRelations verifies that BuildProfile produces a
 // document containing the entity header, a parsed exact quote, and the source
-// page URL for each relation the entity participates in. It seeds a FOUNDED and
-// an inverse relation and checks the rendered text reflects both directions.
+// page URL for each relation the entity participates in. It seeds a FOUNDED
+// relation and checks the rendered text reflects the outgoing direction.
 func TestRebuildProfileRendersRelations(t *testing.T) {
 	db := setupTestDB(t)
-	linkID := insertLink(t, db)
-	passes := NewPassesRepository(db)
-	repo := newTestRepo(t, db)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
-	ctx := context.Background()
+	linkID := insertLink(t, db)
 
-	// Upsert the original URL text and the surrounding content is not needed;
-	// insertLink already created a link_queue row whose url is stored.
-	_ = linkID
+	// One pass whose chunk text is "t", backing the relation below.
+	p := insertPass(t, db, linkID, 0, "t")
 
-	// Two entities and a relation between them, both directions tested later.
-	result := `{
-		"entities": [
-			{"id":"GORIN_EVGENIY","type":"Person","properties":{"name":"Евгений Горин"}},
-			{"id":"ACME_STARTUP","type":"Startup","properties":{"name":"Acme"}}
-		],
-		"relations": [
-			{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED",
-			 "properties":{"details":"co-founder of Acme","exact_quote":"Горин основал Acme","amount":"~","when":"2020","conf":"exact"}}
-		]
-	}`
-	p, _ := passes.UpsertPass(linkID, "d", 0, 0, 5, "t", "h", result)
-	if err := repo.ExtractPass(ctx, p); err != nil {
-		t.Fatalf("ExtractPass: %v", err)
+	gorin, err := repo.CreateEntity("Евгений Горин", []string{"Person"}, []byte(`{"name":"Евгений Горин"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acme, err := repo.CreateEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	src, ok, _ := repo.lookupAlias(canonKey("GORIN_EVGENIY"), "")
-	if !ok {
-		t.Fatal("source entity not found")
-	}
+	insertRelation(t, db, gorin.ID, acme.ID, "FOUNDED",
+		`{"details":"co-founder of Acme","exact_quote":"Горин основал Acme","amount":"~","when":"2020","conf":"exact"}`,
+		"exact", p.ID, linkID)
 
-	text, err := profiles.BuildProfile(src.ID)
+	text, err := profiles.BuildProfile(gorin.ID)
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
@@ -103,10 +161,10 @@ func TestRebuildProfileRendersRelations(t *testing.T) {
 // the returned text is an exact match so pre-computation round-trips.
 func TestRebuildProfilePersistsAndReloads(t *testing.T) {
 	db := setupTestDB(t)
-	repo := newTestRepo(t, db)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
 
-	alice, err := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	alice, err := repo.CreateEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,10 +215,10 @@ func TestRebuildProfileUnknownEntity(t *testing.T) {
 // than failing or producing an empty body.
 func TestRebuildProfileEmptyRelationsNoEntities(t *testing.T) {
 	db := setupTestDB(t)
-	repo := newTestRepo(t, db)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
 
-	alice, err := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	alice, err := repo.CreateEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +236,11 @@ func TestRebuildProfileEmptyRelationsNoEntities(t *testing.T) {
 // asserts it writes a profile row for every entity, returning the count.
 func TestRebuildAllProfilesVerifyFullRebuild(t *testing.T) {
 	db := setupTestDB(t)
-	repo := newTestRepo(t, db)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
 
 	for _, name := range []string{"Alice", "Bob", "Carol"} {
-		if _, err := repo.createEntity(name, []string{"Person"}, []byte(`{"name":"`+name+`"}`)); err != nil {
+		if _, err := repo.CreateEntity(name, []string{"Person"}, []byte(`{"name":"`+name+`"}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -210,22 +268,22 @@ func TestRebuildAllProfilesVerifyFullRebuild(t *testing.T) {
 // with the correct direction ("Carol EMPLOYED_AT Alice").
 func TestRebuildProfileInverseRelation(t *testing.T) {
 	db := setupTestDB(t)
-	repo := newTestRepo(t, db)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
 
-	alice, err := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	alice, err := repo.CreateEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	carol, err := repo.createEntity("Carol", []string{"Person"}, []byte(`{"name":"Carol"}`))
+	carol, err := repo.CreateEntity("Carol", []string{"Person"}, []byte(`{"name":"Carol"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	linkID := insertLink(t, db)
+	p := insertPass(t, db, linkID, 0, "")
 	// Carol -> Alice: for Alice this is an incoming relation.
-	linkID, passID := insertLinkPass(t, db)
-	if err := repo.insertRelation(carol.ID, alice.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
-		t.Fatal(err)
-	}
+	insertRelation(t, db, carol.ID, alice.ID, "EMPLOYED_AT", "{}", "", p.ID, linkID)
 
 	text, err := profiles.BuildProfile(alice.ID)
 	if err != nil {
@@ -273,32 +331,25 @@ func TestRelationTypeNoun(t *testing.T) {
 // footnote. No duplicate footnote is rendered for the repeated chunk.
 func TestBuildProfileDedupesChunkFootnotes(t *testing.T) {
 	db := setupTestDB(t)
+	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
-	repo := newTestRepo(t, db)
-	passes := NewPassesRepository(db)
 
 	linkID := insertLink(t, db)
 	chunkShared := "Acme was founded by Alice in 2020."
 	chunkOther := "Alice later became CEO of Acme."
 
 	// Three distinct passes; two share the same chunk text.
-	p1, _ := passes.UpsertPass(linkID, "d", 0, 0, 1, chunkShared, "h1", "{}")
-	p2, _ := passes.UpsertPass(linkID, "d", 1, 0, 1, chunkShared, "h2", "{}")
-	p3, _ := passes.UpsertPass(linkID, "d", 2, 0, 1, chunkOther, "h3", "{}")
+	p1 := insertPass(t, db, linkID, 0, chunkShared)
+	p2 := insertPass(t, db, linkID, 1, chunkShared)
+	p3 := insertPass(t, db, linkID, 2, chunkOther)
 
-	alice, _ := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
-	acme, _ := repo.createEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
+	alice, _ := repo.CreateEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
+	acme, _ := repo.CreateEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
 
 	props := `{"details":"x"}`
-	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p1.ID, linkID, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p2.ID, linkID, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.insertRelation(alice.ID, acme.ID, "FOUNDED", props, "exact", p3.ID, linkID, 0); err != nil {
-		t.Fatal(err)
-	}
+	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p1.ID, linkID)
+	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p2.ID, linkID)
+	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p3.ID, linkID)
 
 	text, err := profiles.BuildProfile(alice.ID)
 	if err != nil {

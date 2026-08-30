@@ -15,7 +15,7 @@ func marshalTypes(t []string) string {
 	return string(b)
 }
 
-func unmarshalTypes(s string) []string {
+func UnmarshalTypes(s string) []string {
 	if s == "" {
 		return nil
 	}

@@ -17,6 +17,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"meo.ru/rolodex/facts"
+	profs "meo.ru/rolodex/profiles"
 )
 
 // reconcile extracts entities from every not-yet-processed pass (backfill) and
@@ -58,7 +59,7 @@ func main() {
 
 	passes := facts.NewPassesRepository(db)
 	entities := facts.NewEntitiesRepository(db, facts.NewGoqiteEntityPublisher(db))
-	profiles := facts.NewProfilesRepository(db)
+	profiles := profs.NewProfilesRepository(db)
 	ctx := context.Background()
 
 	if *reset {

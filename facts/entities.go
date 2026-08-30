@@ -152,7 +152,7 @@ func EntityMapper(row *sq.Row) Entity {
 	var e Entity
 	e.ID = row.Int("id")
 	e.DisplayName = row.String("display_name")
-	e.Types = unmarshalTypes(row.String("types"))
+	e.Types = UnmarshalTypes(row.String("types"))
 	e.Properties = row.String("properties")
 	e.Confidence = row.String("confidence")
 	e.PromotionScore = row.Int("promotion_score")
@@ -272,7 +272,9 @@ func (r *EntitiesRepository) entityNames(id int) ([]string, error) {
 
 // createEntity inserts a brand-new canonical entity with a single property
 // object and no aliases (aliases are added by the caller).
-func (r *EntitiesRepository) createEntity(displayName string, types []string, props json.RawMessage) (Entity, error) {
+// CreateEntity inserts a brand-new canonical entity with a single property
+// object (or none when props is empty) and publishes a creation event.
+func (r *EntitiesRepository) CreateEntity(displayName string, types []string, props json.RawMessage) (Entity, error) {
 	propArr := "[]"
 	if len(props) > 0 {
 		propArr = mustJSON([]json.RawMessage{props})
@@ -290,6 +292,12 @@ func (r *EntitiesRepository) createEntity(displayName string, types []string, pr
 	// A brand-new entity is an entity lifecycle event.
 	r.publishEvent(e.ID, e.DisplayName)
 	return e, nil
+}
+
+// createEntity is a test-support alias for CreateEntity retained so the
+// package's own tests can seed entities without importing the exported path.
+func (r *EntitiesRepository) createEntity(displayName string, types []string, props json.RawMessage) (Entity, error) {
+	return r.CreateEntity(displayName, types, props)
 }
 
 // bumpPromotion records a new "founding" of the entity and auto-promotes it to
@@ -559,7 +567,7 @@ func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 // operation as GlobalReconcile.
 func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.RawMessage, types []string, passID, linkID, chunk int) error {
 	// Always create the entity for this mention first.
-	e, err := r.createEntity(name, types, props)
+	e, err := r.CreateEntity(name, types, props)
 	if err != nil {
 		return err
 	}
@@ -706,7 +714,7 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 // amount, when, conf) plus its confidence column into one normalized string so
 // two relations can be compared field-by-field in a single token set.
 func relationTextBlock(props, _ string) string {
-	p := parseRelationProperties(props)
+	p := ParseRelationProperties(props)
 	var parts []string
 	if p.Details != "" {
 		parts = append(parts, p.Details)
