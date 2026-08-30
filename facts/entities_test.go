@@ -379,7 +379,7 @@ func TestEntityEventsPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Force a merge; the survivor keeps the longer display name.
-	survivor, err := repo.reconcile(e1, e2, nil)
+	survivor, err := repo.reconcile(e1, e2, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,6 +432,47 @@ func TestMergeEntitiesForcesMaster(t *testing.T) {
 	}
 	if _, err := r.GetEntity(slave.ID); err == nil {
 		t.Fatalf("slave %d should have been deleted", slave.ID)
+	}
+}
+
+// TestMergeEntitiesKeepsMasterName verifies that a manual merge always keeps the
+// master's display name, even when the slave's display name is strictly longer.
+// The longer slave name must instead survive only as an alias so nothing is lost.
+func TestMergeEntitiesKeepsMasterName(t *testing.T) {
+	db := setupTestDB(t)
+	r := newTestRepo(t, db)
+
+	master, err := r.createEntity("Master Co", []string{"Organization"}, []byte(`{"name":"Master Co"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The slave's name is strictly longer than the master's, so the generic
+	// reconcile name rule would pick it; the manual merge must not. Register the
+	// display-name alias exactly as production ingestion does, so the longer name
+	// survives the merge as an alias.
+	slave, err := r.createEntity("Master Company Incorporated", []string{"Organization"}, []byte(`{"name":"Master Company Incorporated"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.upsertAlias(slave.ID, canonKey("Master Company Incorporated"), "Master Company Incorporated"); err != nil {
+		t.Fatal(err)
+	}
+
+	survivor, err := r.MergeEntities(master.ID, slave.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if survivor.DisplayName != "Master Co" {
+		t.Errorf("expected master name to be kept, got %q", survivor.DisplayName)
+	}
+
+	// The longer slave name must remain reachable as an alias of the survivor.
+	got, ok, err := r.lookupAlias(canonKey("Master Company Incorporated"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.ID != master.ID {
+		t.Errorf("expected longer slave name to resolve to master %d, ok=%v got=%d", master.ID, ok, got.ID)
 	}
 }
 

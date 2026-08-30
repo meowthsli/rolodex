@@ -589,7 +589,7 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 				return err
 			}
 		}
-		e, err = r.reconcile(e, match, nil)
+		e, err = r.reconcile(e, match, nil, false)
 		if err != nil {
 			return err
 		}
@@ -666,7 +666,7 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 		if a == nil || b == nil {
 			break
 		}
-		survivor, err := r.reconcile(*a, *b, nil)
+		survivor, err := r.reconcile(*a, *b, nil, false)
 		if err != nil {
 			return total, err
 		}
@@ -703,9 +703,11 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 // points at a.ID or b.ID, in which case that entity is forced to survive; their
 // types, properties and display name are unioned; the loser's mentions and
 // aliases are redirected to the survivor; a permanent redirect is recorded; and
-// the loser is deleted. It is the single merge operation used both when ingesting
-// a new mention and during GlobalReconcile. It returns the surviving entity.
-func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error) {
+// the loser is deleted. keepName forces the survivor's display name to be kept
+// even when the loser's is strictly longer (used for manual merges). It is the
+// single merge operation used both when ingesting a new mention and during
+// GlobalReconcile. It returns the surviving entity.
+func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int, keepName bool) (Entity, error) {
 	var survivor, loser Entity
 	if prefer != nil && (*prefer == a.ID || *prefer == b.ID) {
 		if *prefer == a.ID {
@@ -719,8 +721,10 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int) (Entity, error)
 
 	newTypes := unionStrings(survivor.Types, loser.Types)
 	newProps := unionProperties(survivor.Properties, json.RawMessage(loser.Properties))
+	// The survivor's display name is kept unless the loser's is strictly longer;
+	// pass keepName to always keep the survivor's name (e.g. manual merges).
 	display := survivor.DisplayName
-	if len(loser.DisplayName) > len(display) {
+	if !keepName && len(loser.DisplayName) > len(display) {
 		display = loser.DisplayName
 	}
 
@@ -816,7 +820,7 @@ func (r *EntitiesRepository) MergeEntities(masterID, slaveID int) (Entity, error
 	if err != nil {
 		return Entity{}, fmt.Errorf("load slave %d: %w", slaveID, err)
 	}
-	return r.reconcile(master, slave, &masterID)
+	return r.reconcile(master, slave, &masterID, true)
 }
 
 func pickSurvivor(a, b Entity) (survivor, loser Entity) {
