@@ -234,8 +234,21 @@ func (s *Scraper) scrapeOnce() error {
 
 	content := string(body)
 
-	if strings.Contains(content, "qauth.js") {
-		// TODO: add chrome in headless mode
+	// Some sites gate their real content behind a JavaScript anti-bot challenge
+	// (qauth.js): the plain HTTP body is only a shell waiting for scripts to
+	// build the actual page. Detect that marker and re-fetch with a headless
+	// Chrome, which executes the scripts, and use the fully rendered DOM as the
+	// content. If no browser is available (or rendering fails) the plain HTTP
+	// content is kept rather than failing the scrape.
+	if strings.Contains(content, qauthJSMarker) {
+		log.Printf("scraping link id=%d: page gated by %s; rendering with headless chrome", link.ID, qauthJSMarker)
+		rendered, rerr := fetchWithHeadlessChrome(base)
+		if rerr != nil {
+			log.Printf("scraping link id=%d: headless chrome failed (%v); keeping plain HTTP content", link.ID, rerr)
+		} else {
+			log.Printf("scraping link id=%d: headless chrome rendered %d bytes", link.ID, len(rendered))
+			content = rendered
+		}
 	}
 
 	// Too small to be useful: don't store content (and don't spider it). Mark
