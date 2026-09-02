@@ -84,7 +84,7 @@ var nameTokenCanonicalRaw = map[string]string{
 	// Александр / Александра
 	"sasha": "aleksandr", "shura": "aleksandr", "sania": "aleksandr", "sashka": "aleksandr", "sashenka": "aleksandr",
 	// Алексей
-	"alesha": "aleksei", "liosha": "aleksei", "lesha": "aleksei", "leshka": "aleksei", "lioshka": "aleksei", "aleks": "aleksei",
+	"alesha": "aleksei", "liosha": "aleksei", "lesha": "aleksei", "leshka": "aleksei", "lioshka": "aleksei",
 	// Андрей
 	"andriusha": "andrei", "andriukha": "andrei", "dusia": "andrei",
 	// Антон

@@ -54,8 +54,8 @@ func aliasesForEntity(t *testing.T, db *sql.DB, id int) []string {
 // later" ordering: a chunk that emits only "Alex" is followed by a later chunk
 // of the SAME link emitting "Alex Karp". Because both share the link, the
 // partial mention resolves into the full-name entity, leaving a single record
-// whose display name is the fuller "Alex Karp" and which carries "alex" as an
-// alias.
+// whose display name is the fuller "Alex Karp"; the folded partial name
+// ("aleks") must not linger as a global alias of the survivor.
 func TestSameLinkPartialNameMergesLaterFullName(t *testing.T) {
 	db := setupTestDB(t)
 	repo, linkID, passID := sameLinkPass(t, db)
@@ -83,11 +83,11 @@ func TestSameLinkPartialNameMergesLaterFullName(t *testing.T) {
 		return false
 	}
 	// The folded partial name must NOT leak out of the link as a global alias:
-	// "aleksei" is the canonical form of "Alex". It is still recoverable within
-	// the same link via the link-scoped subset rule, but must not resolve across
+	// "aleks" is the canonical form of "Alex". It is still recoverable within the
+	// same link via the link-scoped subset rule, but must not resolve across
 	// links, so it must not be recorded as an alias of "Alex Karp".
-	if contains("aleksei") {
-		t.Errorf("partial-name alias \"aleksei\" must not leak globally, got %v", aliases)
+	if contains("aleks") {
+		t.Errorf("partial-name alias \"aleks\" must not leak globally, got %v", aliases)
 	}
 }
 

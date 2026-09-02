@@ -90,7 +90,7 @@ func fetchWithHeadlessChrome(rawURL string) (string, error) {
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chrome),
-		chromedp.Flag("headless", false),
+		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
