@@ -21,7 +21,7 @@ def connect() -> sqlite3.Connection:
 # Maps a UI metric label to the underlying table and WHERE filter.
 _COUNTS = {
     "entities": ("entities", "1=1"),
-    "relations": ("relations", "1=1"),
+    "claims": ("claims", "1=1"),
     "passes": ("passes", "1=1"),
     "links": ("link_queue", "last_scrapped_at IS NOT NULL"),
     "pending": ("link_queue", "last_scrapped_at IS NULL"),
@@ -76,12 +76,12 @@ def _parse_types(raw: str) -> str:
         return raw
 
 
-def load_relations() -> pd.DataFrame:
+def load_claims() -> pd.DataFrame:
     conn = connect()
     q = """
         SELECT r.id, s.display_name AS source, r.type, t.display_name AS target,
                r.confidence, r.chunk_index, r.created_at
-        FROM relations r
+        FROM claims r
         JOIN entities s ON s.id = r.source_id
         JOIN entities t ON t.id = r.target_id
         ORDER BY r.created_at DESC
@@ -109,7 +109,7 @@ def load_entity_detail(entity_id: int) -> dict:
         """
         SELECT r.id, r.type, r.confidence, s.display_name AS other,
                t.display_name AS target_name
-        FROM relations r
+        FROM claims r
         JOIN entities s ON s.id = r.source_id
         JOIN entities t ON t.id = r.target_id
         WHERE r.source_id = ? OR r.target_id = ?
@@ -129,7 +129,7 @@ def load_entity_detail(entity_id: int) -> dict:
     return {
         "entity": ent,
         "aliases": aliases,
-        "relations": pd.DataFrame(out) if out else pd.DataFrame(
+        "claims": pd.DataFrame(out) if out else pd.DataFrame(
             columns=["Rel", "Entity", "Direction"]
         ),
     }
@@ -186,13 +186,13 @@ st.caption(f"Read-only view of `{DB_PATH}`")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Entities", load_count("entities"))
-c2.metric("Relations", load_count("relations"))
+c2.metric("Claims", load_count("claims"))
 c3.metric("Passes", load_count("passes"))
 c4.metric("Links scraped", load_count("links"))
 c5.metric("Links pending", load_count("pending"))
 
-tab_entities, tab_relations, tab_graph, tab_profiles, tab_passes, tab_links = st.tabs(
-    ["Entities", "Relations", "Graph", "Profiles", "Passes", "Links"]
+tab_entities, tab_claims, tab_graph, tab_profiles, tab_passes, tab_links = st.tabs(
+    ["Entities", "Claims", "Graph", "Profiles", "Passes", "Links"]
 )
 
 with tab_entities:
@@ -216,14 +216,14 @@ with tab_entities:
         if detail["aliases"]:
             st.write("Aliases:", ", ".join(detail["aliases"]))
         st.dataframe(
-            detail["relations"],
+            detail["claims"],
             width='stretch',
             hide_index=True,
         )
 
-with tab_relations:
-    st.subheader("Relations")
-    st.dataframe(load_relations(), width='stretch', hide_index=True)
+with tab_claims:
+    st.subheader("Claims")
+    st.dataframe(load_claims(), width='stretch', hide_index=True)
 
 with tab_graph:
     st.subheader("Graph")
@@ -252,7 +252,7 @@ with tab_graph:
         rel_rows = conn.execute(
             f"""
             SELECT s.display_name AS a, r.type, t.display_name AS b
-            FROM relations r
+            FROM claims r
             JOIN entities s ON s.id = r.source_id
             JOIN entities t ON t.id = r.target_id
             WHERE s.id IN ({placeholders}) AND t.id IN ({placeholders})

@@ -53,7 +53,7 @@ func insertLink(t *testing.T, db *sql.DB) int {
 }
 
 // insertPass inserts a passes row for the given link/chunk text and returns it
-// (its ID and LinkQueueID satisfy the relations foreign keys).
+// (its ID and LinkQueueID satisfy the claims foreign keys).
 func insertPass(t *testing.T, db *sql.DB, linkID, chunkIndex int, chunkText string) facts.Pass {
 	t.Helper()
 
@@ -64,30 +64,30 @@ func insertPass(t *testing.T, db *sql.DB, linkID, chunkIndex int, chunkText stri
 	return p
 }
 
-// insertRelation inserts a relations row backed by the given pass and link.
-func insertRelation(t *testing.T, db *sql.DB, src, dst int, typ, props, conf string, passID, linkID int) {
+// insertClaim inserts a claims row backed by the given pass and link.
+func insertClaim(t *testing.T, db *sql.DB, src, dst int, typ, props, conf string, passID, linkID int) {
 	t.Helper()
 
 	_, err := sq.Exec(db, sq.SQLite.Queryf(
-		"INSERT INTO relations (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
+		"INSERT INTO claims (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
 			"VALUES ({}, {}, {}, {}, {}, {}, {}, 0)",
 		src, dst, typ, props, conf, passID, linkID))
 	if err != nil {
-		t.Fatalf("insert relation: %v", err)
+		t.Fatalf("insert claim: %v", err)
 	}
 }
 
-// TestRebuildProfileRendersRelations verifies that BuildProfile produces a
+// TestRebuildProfileRendersClaims verifies that BuildProfile produces a
 // document containing the entity header, a parsed exact quote, and the source
-// page URL for each relation the entity participates in. It seeds a FOUNDED
-// relation and checks the rendered text reflects the outgoing direction.
-func TestRebuildProfileRendersRelations(t *testing.T) {
+// page URL for each claim the entity participates in. It seeds a FOUNDED
+// claim and checks the rendered text reflects the outgoing direction.
+func TestRebuildProfileRendersClaims(t *testing.T) {
 	db := setupTestDB(t)
 	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
 	linkID := insertLink(t, db)
 
-	// One pass whose chunk text is "t", backing the relation below.
+	// One pass whose chunk text is "t", backing the claim below.
 	p := insertPass(t, db, linkID, 0, "t")
 
 	gorin, err := repo.CreateEntity("Евгений Горин", []string{"Person"}, []byte(`{"name":"Евгений Горин"}`))
@@ -99,7 +99,7 @@ func TestRebuildProfileRendersRelations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	insertRelation(t, db, gorin.ID, acme.ID, "FOUNDED",
+	insertClaim(t, db, gorin.ID, acme.ID, "FOUNDED",
 		`{"details":"co-founder of Acme","exact_quote":"Горин основал Acme","amount":"~","when":"2020","conf":"exact"}`,
 		"exact", p.ID, linkID)
 
@@ -119,11 +119,11 @@ func TestRebuildProfileRendersRelations(t *testing.T) {
 	if !strings.Contains(text, "Person") {
 		t.Errorf("profile missing type section")
 	}
-	// The relation appears in prose: entity FOUNDED the other. The Person name
-	// is red, the Startup (non-Person) name is green, and the relation type is
+	// The claim appears in prose: entity FOUNDED the other. The Person name
+	// is red, the Startup (non-Person) name is green, and the claim type is
 	// rendered as a neutral Russian noun ("Основание" for FOUNDED).
 	if !strings.Contains(text, "<span style='color:#d33'>Евгений Горин</span> Основание <span style='color:#2e7d32'>Acme</span>") {
-		t.Errorf("profile missing colored outgoing relation sentence")
+		t.Errorf("profile missing colored outgoing claim sentence")
 	}
 	// The parsed exact quote is embedded.
 	if !strings.Contains(text, "“Горин основал Acme”") {
@@ -210,10 +210,10 @@ func TestRebuildProfileUnknownEntity(t *testing.T) {
 	}
 }
 
-// TestRebuildProfileEmptyRelationsNoEntities verifies a fresh entity with no
-// relations renders a document carrying the "no relations" placeholder rather
+// TestRebuildProfileEmptyClaimsNoEntities verifies a fresh entity with no
+// claims renders a document carrying the "no claims" placeholder rather
 // than failing or producing an empty body.
-func TestRebuildProfileEmptyRelationsNoEntities(t *testing.T) {
+func TestRebuildProfileEmptyClaimsNoEntities(t *testing.T) {
 	db := setupTestDB(t)
 	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
@@ -228,7 +228,7 @@ func TestRebuildProfileEmptyRelationsNoEntities(t *testing.T) {
 		t.Fatalf("BuildProfile: %v", err)
 	}
 	if !strings.Contains(text, "Связей не зарегистрировано") {
-		t.Errorf("profile should note the absence of relations, got %q", text)
+		t.Errorf("profile should note the absence of claims, got %q", text)
 	}
 }
 
@@ -263,10 +263,10 @@ func TestRebuildAllProfilesVerifyFullRebuild(t *testing.T) {
 	}
 }
 
-// TestRebuildProfileInverseRelation confirms an incoming relation (another
+// TestRebuildProfileInverseClaim confirms an incoming claim (another
 // entity pointing at the profiled entity) is rendered in the prose sentence
 // with the correct direction ("Carol EMPLOYED_AT Alice").
-func TestRebuildProfileInverseRelation(t *testing.T) {
+func TestRebuildProfileInverseClaim(t *testing.T) {
 	db := setupTestDB(t)
 	repo := facts.NewEntitiesRepository(db, facts.NoopEntityPublisher{})
 	profiles := NewProfilesRepository(db)
@@ -282,26 +282,26 @@ func TestRebuildProfileInverseRelation(t *testing.T) {
 
 	linkID := insertLink(t, db)
 	p := insertPass(t, db, linkID, 0, "")
-	// Carol -> Alice: for Alice this is an incoming relation.
-	insertRelation(t, db, carol.ID, alice.ID, "EMPLOYED_AT", "{}", "", p.ID, linkID)
+	// Carol -> Alice: for Alice this is an incoming claim.
+	insertClaim(t, db, carol.ID, alice.ID, "EMPLOYED_AT", "{}", "", p.ID, linkID)
 
 	text, err := profiles.BuildProfile(alice.ID)
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
-	// Carol (Person) -> Alice (Person), an incoming relation for Alice. Both
+	// Carol (Person) -> Alice (Person), an incoming claim for Alice. Both
 	// names render red, and EMPLOYED_AT renders with its neutral Russian noun.
 	if !strings.Contains(text, "<span style='color:#d33'>Carol</span> Сотрудничество/вовлечение <span style='color:#d33'>Alice</span>") {
-		t.Errorf("profile missing incoming relation sentence, got %q", text)
+		t.Errorf("profile missing incoming claim sentence, got %q", text)
 	}
 	if !strings.Contains(text, "## Также важно") {
-		t.Errorf("profile missing incoming relation section header")
+		t.Errorf("profile missing incoming claim section header")
 	}
 }
 
-// TestRelationTypeNoun verifies the raw relation type is rendered as a neutral
+// TestClaimTypeNoun verifies the raw claim type is rendered as a neutral
 // Russian noun in profiles, and that unknown types fall back to the raw token.
-func TestRelationTypeNoun(t *testing.T) {
+func TestClaimTypeNoun(t *testing.T) {
 	cases := []struct {
 		typ  string
 		want string
@@ -319,15 +319,15 @@ func TestRelationTypeNoun(t *testing.T) {
 		{"MYSTERY_TYPE", "MYSTERY_TYPE"},
 	}
 	for _, c := range cases {
-		if got := relationTypeNoun(c.typ); got != c.want {
-			t.Errorf("relationTypeNoun(%q) = %q, want %q", c.typ, got, c.want)
+		if got := claimTypeNoun(c.typ); got != c.want {
+			t.Errorf("claimTypeNoun(%q) = %q, want %q", c.typ, got, c.want)
 		}
 	}
 }
 
 // TestBuildProfileDedupesChunkFootnotes verifies that footnotes are emitted per
-// unique pass chunk: two relations backed by the same chunk text share a single
-// footnote reference, while a relation from a different chunk gets its own
+// unique pass chunk: two claims backed by the same chunk text share a single
+// footnote reference, while a claim from a different chunk gets its own
 // footnote. No duplicate footnote is rendered for the repeated chunk.
 func TestBuildProfileDedupesChunkFootnotes(t *testing.T) {
 	db := setupTestDB(t)
@@ -347,21 +347,21 @@ func TestBuildProfileDedupesChunkFootnotes(t *testing.T) {
 	acme, _ := repo.CreateEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
 
 	props := `{"details":"x"}`
-	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p1.ID, linkID)
-	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p2.ID, linkID)
-	insertRelation(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p3.ID, linkID)
+	insertClaim(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p1.ID, linkID)
+	insertClaim(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p2.ID, linkID)
+	insertClaim(t, db, alice.ID, acme.ID, "FOUNDED", props, "exact", p3.ID, linkID)
 
 	text, err := profiles.BuildProfile(alice.ID)
 	if err != nil {
 		t.Fatalf("BuildProfile: %v", err)
 	}
 
-	// The shared chunk is deduped: exactly two relations point at footnote [1]
+	// The shared chunk is deduped: exactly two claims point at footnote [1]
 	// (one per reference), so `[1]` appears twice and no second footnote for it.
 	if got := strings.Count(text, `[1]`); got != 2 {
-		t.Errorf("expected footnote [1] referenced by the two shared-chunk relations, got %d refs", got)
+		t.Errorf("expected footnote [1] referenced by the two shared-chunk claims, got %d refs", got)
 	}
-	// Relation 3 differs only by chunk, so it references a distinct footnote [2].
+	// Claim 3 differs only by chunk, so it references a distinct footnote [2].
 	if got := strings.Count(text, `[2]`); got != 1 {
 		t.Errorf("expected the other chunk to get a single footnote [2], got %d refs", got)
 	}

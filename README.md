@@ -2,7 +2,7 @@
 
 A scraper + facts machine that crawls links, extracts readable text, and builds a
 canonical knowledge graph — entities (people, organizations, dates, …) and the
-relations between them (founded, invested, employed-at, …) — from the content via
+claims between them (founded, invested, employed-at, …) — from the content via
 an LLM. State lives in a single SQLite database (`rolodex.db`); schema is managed by
 the migrations under `./migrations`.
 
@@ -21,8 +21,8 @@ database is initialized automatically the first time any of them runs.
 
 ### rolodex
 The long-running service: scrapes pending links, feeds readable text to the LLM
-for entity and relation extraction, reconciles entities (and redirects their
-relations onto the survivor), and publishes entity lifecycle events.
+for entity and claim extraction, reconciles entities (and redirects their
+claims onto the survivor), and publishes entity lifecycle events.
 
 A link is analyzed once per analysis **domain** it carries; each domain uses its
 own system prompt (see the "Domains" section below). Links without a prompt for
@@ -57,20 +57,20 @@ Usage: `add-content [-domains venture,corporate] <file> [url]`
   the `readable_text`. A random suffix is added to the URL so each run is distinct.
 
 ### reconcile
-Backfill entity and relation extraction for every not-yet-processed pass and then
-merge duplicate entities until the graph is stable, followed by a relation
-dedup pass that drops duplicate relations. Safe to re-run.
+Backfill entity and claim extraction for every not-yet-processed pass and then
+merge duplicate entities until the graph is stable, followed by a claim
+dedup pass that drops duplicate claims. Safe to re-run.
 
 Usage: `reconcile [-reset]`
 - `-reset` — **destructive**: drops the entire knowledge graph (entities, their
-  aliases/mentions/relations and the FTS index) and unmarks every pass as
+  aliases/mentions/claims and the FTS index) and unmarks every pass as
   extracted, then rebuilds everything from the stored pass results. It asks for
   `yes` confirmation on stdin before wiping anything.
 - Logs every SQL query to stdout. Publishes entity lifecycle events to the goqite
   queue (requires `rolodex.db` to be migrated).
 
-During the relation dedup, two relations are considered duplicates when they
-refer to the same ordered entity pair with the same relation type and their
+During the claim dedup, two claims are considered duplicates when they
+refer to the same ordered entity pair with the same claim type and their
 properties — flattened into a text block — are near identical. The variant with
 the shorter text block is dropped and the fullest one is kept.
 
@@ -121,10 +121,10 @@ flag) and default to `["venture"]` when not specified.
 
 An entity profile is a long, human-readable document describing one canonical
 entity: its types, known/promotion status and aliases, followed by every
-relation it participates in. Each relation is written out as a prose sentence
+claim it participates in. Each claim is written out as a prose sentence
 (e.g. «DataArt SEEDED Tower Gate Capital»), including the supporting **exact
 quote** and the **source page URL** it was extracted from, plus the amount/when
-metadata stored on the relation.
+metadata stored on the claim.
 
 Profiles live in the `entity_profiles` table (`entity_id`, `profile`,
 `updated_at`). They are pre-calculated so reads don't recompute them:
@@ -139,7 +139,7 @@ Profiles live in the `entity_profiles` table (`entity_id`, `profile`,
 ## Dashboard (read-only)
 
 A Python + Streamlit web view of the knowledge graph. It only reads `rolodex.db`
-(entities, relations, passes, link queue) and never writes — you can point it at
+(entities, claims, passes, link queue) and never writes — you can point it at
 a live database while the Go service runs.
 
 Setup and launch:
@@ -153,8 +153,8 @@ Or run directly: `./venv/bin/streamlit run dashboard/app.py`
 
 Tabs:
 - **Entities** — table sorted by promotion score, plus a detail view with
-  aliases and all in/out relations for a selected entity.
-- **Relations** — source / type / target listing.
+  aliases and all in/out claims for a selected entity.
+- **Claims** — source / type / target listing.
 - **Graph** — spring-layout knowledge graph of the top-N entities, with an
   entity selector that centers the view on the chosen entity.
 - **Profiles** — pick an entity to view its pre-computed profile document.

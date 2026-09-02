@@ -46,21 +46,21 @@ func EntityProfileMapper(row *sq.Row) EntityProfile {
 	return p
 }
 
-// profileRelation is the per-relation data used to render a profile section.
+// profileClaim is the per-claim data used to render a profile section.
 // Direction records how the entity participates ("outgoing" = entity is the
 // source, "incoming" = entity is the target).
-type profileRelation struct {
-	Type       string   // relation type, e.g. FOUNDED, EMPLOYED_AT
+type profileClaim struct {
+	Type       string   // claim type, e.g. FOUNDED, EMPLOYED_AT
 	Other      string   // the display name of the counterpart entity
 	OtherTypes []string // types of the counterpart entity (for coloring)
 	Direction  string   // "outgoing" or "incoming"
-	Details    string   // human-written details from relation properties
-	Quote      string   // exact_quote from relation properties
-	Amount     string   // amount from relation properties
-	When       string   // when from relation properties
-	Confidence string   // confidence measure from relation properties
-	SourceURL  string   // page URL the relation was extracted from
-	ChunkText  string   // full text of the pass chunk the relation came from
+	Details    string   // human-written details from claim properties
+	Quote      string   // exact_quote from claim properties
+	Amount     string   // amount from claim properties
+	When       string   // when from claim properties
+	Confidence string   // confidence measure from claim properties
+	SourceURL  string   // page URL the claim was extracted from
+	ChunkText  string   // full text of the pass chunk the claim came from
 }
 
 // ProfilesRepository pre-computes and stores entity profile documents.
@@ -175,7 +175,7 @@ func (r *ProfilesRepository) RebuildAll() (int, error) {
 // BuildProfile renders the long-text profile document for one entity without
 // persisting it. It returns an empty string when the entity does not exist.
 // The document describes the entity (types, known flag, aliases) and then every
-// relation it participates in, written in prose with the supporting exact quote
+// claim it participates in, written in prose with the supporting exact quote
 // and the source page URL where the fact was extracted.
 func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	ent, err := sq.FetchOne(r.db, sq.SQLite.Queryf(
@@ -194,7 +194,7 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 		return "", err
 	}
 
-	rels, err := r.profileRelations(entityID)
+	rels, err := r.profileClaims(entityID)
 	if err != nil {
 		return "", err
 	}
@@ -225,7 +225,7 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 		}
 	}
 
-	var outgoing, incoming []profileRelation
+	var outgoing, incoming []profileClaim
 	for _, rel := range rels {
 		if rel.Direction == "outgoing" {
 			outgoing = append(outgoing, rel)
@@ -238,13 +238,13 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	if len(outgoing) > 0 {
 		b.WriteString("\n## Что происходило\n")
 		for _, rel := range outgoing {
-			renderRelationSection(&b, ent.DisplayName, ent.Types, rel, &fn)
+			renderClaimSection(&b, ent.DisplayName, ent.Types, rel, &fn)
 		}
 	}
 	if len(incoming) > 0 {
 		b.WriteString("\n## Также важно\n")
 		for _, rel := range incoming {
-			renderRelationSection(&b, ent.DisplayName, ent.Types, rel, &fn)
+			renderClaimSection(&b, ent.DisplayName, ent.Types, rel, &fn)
 		}
 	}
 	if len(outgoing) == 0 && len(incoming) == 0 {
@@ -254,31 +254,31 @@ func (r *ProfilesRepository) BuildProfile(entityID int) (string, error) {
 	return b.String(), nil
 }
 
-// profileRelations loads every relation the entity participates in (as source
+// profileClaims loads every claim the entity participates in (as source
 // or target) with the counterpart name and the source page URL, in one query.
-func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, error) {
+func (r *ProfilesRepository) profileClaims(entityID int) ([]profileClaim, error) {
 	rows, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
 		"SELECT r.id, r.type, r.properties, r.confidence, r.source_id, r.target_id, r.link_id, "+
 			"CASE WHEN r.source_id = {} THEN 'outgoing' ELSE 'incoming' END AS direction, "+
 			"CASE WHEN r.source_id = {} THEN t.display_name ELSE s.display_name END AS other, "+
 			"CASE WHEN r.source_id = {} THEN t.types ELSE s.types END AS other_types, "+
 			"lq.url AS src_url, p.chunk_text AS chunk_text "+
-			"FROM relations r "+
+			"FROM claims r "+
 			"JOIN entities s ON s.id = r.source_id "+
 			"JOIN entities t ON t.id = r.target_id "+
 			"LEFT JOIN link_queue lq ON lq.id = r.link_id "+
 			"LEFT JOIN passes p ON p.id = r.pass_id "+
 			"WHERE r.source_id = {} OR r.target_id = {} "+
 			"ORDER BY r.id", entityID, entityID, entityID, entityID, entityID),
-		func(row *sq.Row) profileRelation {
-			var p profileRelation
+		func(row *sq.Row) profileClaim {
+			var p profileClaim
 			p.Type = row.String("type")
 			p.Other = row.String("other")
 			p.OtherTypes = utils.UnmarshalTypes(row.String("other_types"))
 			p.Direction = row.String("direction")
 			p.SourceURL = row.String("src_url")
 			p.ChunkText = row.String("chunk_text")
-			props := facts.ParseRelationProperties(row.String("properties"))
+			props := facts.ParseClaimProperties(row.String("properties"))
 			p.Details = props.Details
 			p.Quote = props.ExactQuote
 			p.Amount = props.Amount
@@ -292,15 +292,15 @@ func (r *ProfilesRepository) profileRelations(entityID int) ([]profileRelation, 
 	return rows, nil
 }
 
-// renderRelationSection appends one relation to the profile as a short prose
+// renderClaimSection appends one claim to the profile as a short prose
 // block: the relationship, the details, and (when present) the exact quote and
 // the source page the fact was taken from. Entity names are colored by type —
 // a Person name is red, any other type is green — so they stand out in the
 // rendered profile.
-func renderRelationSection(b *strings.Builder, self string, selfTypes []string, rel profileRelation, fn *footnoteCollector) {
+func renderClaimSection(b *strings.Builder, self string, selfTypes []string, rel profileClaim, fn *footnoteCollector) {
 	// Humanize: "Alice Основание Acme", with each entity name colored by its own
-	// type and the relation type as a neutral noun.
-	relNoun := relationTypeNoun(rel.Type)
+	// type and the claim type as a neutral noun.
+	relNoun := claimTypeNoun(rel.Type)
 	var sentence string
 	if rel.Direction == "outgoing" {
 		sentence = colorName(self, selfTypes) + " " + relNoun + " " + colorName(rel.Other, rel.OtherTypes)
@@ -349,7 +349,7 @@ type footnoteItem struct {
 }
 
 // footnoteCollector accumulates the distinct pass chunks referenced by a
-// profile's relations and renders them as numbered footnotes. Identical chunks
+// profile's claims and renders them as numbered footnotes. Identical chunks
 // map to a single footnote, so a repeated chunk reuses the same reference.
 type footnoteCollector struct {
 	byChunk map[string]int // chunk text -> footnote id (1-based)
@@ -420,10 +420,10 @@ func htmlEscape(s string) string {
 	return r.Replace(s)
 }
 
-// relationTypeNoun maps a raw relation type (e.g. "INVESTED_IN", "FOUNDED") to
+// claimTypeNoun maps a raw claim type (e.g. "INVESTED_IN", "FOUNDED") to
 // a neutral Russian noun so the profile prose reads naturally ("Name Инвестиции
 // Other"). Unknown types fall back to the raw token so nothing is ever hidden.
-func relationTypeNoun(typ string) string {
+func claimTypeNoun(typ string) string {
 	switch typ {
 	case "FOUNDED", "FOUNDED/COFOUNDED":
 		return "Основание"

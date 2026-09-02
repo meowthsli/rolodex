@@ -23,9 +23,9 @@ const (
 	// fuzzyThreshold is the minimum similarity score for a fuzzy (FTS5) match
 	// to be treated as the same entity.
 	fuzzyThreshold = 0.87
-	// relationDedupThreshold is the minimum token similarity between two
-	// relations' property text blocks for them to count as duplicates.
-	relationDedupThreshold = 0.5
+	// claimDedupThreshold is the minimum token similarity between two
+	// claims' property text blocks for them to count as duplicates.
+	claimDedupThreshold = 0.5
 	// dateType is the only entity type that is exclusive: a Date entity may
 	// only merge with another Date entity, never with Person/Investor/etc.
 	dateType = "Date"
@@ -84,11 +84,11 @@ type ENTITIES struct {
 
 var EN = sq.New[ENTITIES]("e")
 
-// RELATIONS describes the relations table: directed edges between two canonical
-// entities extracted from a pass. One row per asserted relation; duplicates are
+// CLAIMS describes the claims table: directed edges between two canonical
+// entities extracted from a pass. One row per asserted claim; duplicates are
 // kept (no uniqueness constraint) so re-extraction stays idempotent and every
 // occurrence is preserved as provenance.
-type RELATIONS struct {
+type CLAIMS struct {
 	sq.TableStruct
 	ID         sq.NumberField `sq:"id"`
 	SourceID   sq.NumberField `sq:"source_id"`
@@ -102,15 +102,15 @@ type RELATIONS struct {
 	CreatedAt  sq.TimeField   `sq:"created_at"`
 }
 
-var RN = sq.New[RELATIONS]("r")
+var CL = sq.New[CLAIMS]("r")
 
-// Relation is the Go model for a row in the relations table.
-type Relation struct {
+// Claim is the Go model for a row in the claims table.
+type Claim struct {
 	ID         int
 	SourceID   int
 	TargetID   int
 	Type       string
-	Properties string // JSON object of relation attributes (details/quote/amount/when)
+	Properties string // JSON object of claim attributes (details/quote/amount/when)
 	Confidence string
 	PassID     int
 	LinkID     int
@@ -118,10 +118,10 @@ type Relation struct {
 	CreatedAt  time.Time
 }
 
-// RelationMapper scans a row from the relations table into a Relation. It is the
-// single strict mapper used whenever a relation row is loaded.
-func RelationMapper(row *sq.Row) Relation {
-	var r Relation
+// ClaimMapper scans a row from the claims table into a Claim. It is the
+// single strict mapper used whenever a claim row is loaded.
+func ClaimMapper(row *sq.Row) Claim {
+	var r Claim
 	r.ID = row.Int("id")
 	r.SourceID = row.Int("source_id")
 	r.TargetID = row.Int("target_id")
@@ -413,19 +413,19 @@ func (r *EntitiesRepository) resolveEntity(name, modelID string, types []string)
 
 // ExtractPass runs both phases for a single pass: it first folds every entity
 // into the canonical graph (ExtractPassEntities) and then wires up the
-// relations between them (ExtractPassRelations), marking the pass extracted
-// once relations are done. Callers that need finer control (e.g. reconcile's
+// claims between them (ExtractPassClaims), marking the pass extracted
+// once claims are done. Callers that need finer control (e.g. reconcile's
 // backfill) may run the two phases separately.
 func (r *EntitiesRepository) ExtractPass(ctx context.Context, p Pass) error {
 	if err := r.ExtractPassEntities(ctx, p); err != nil {
 		return err
 	}
-	return r.ExtractPassRelations(ctx, p)
+	return r.ExtractPassClaims(ctx, p)
 }
 
 // ExtractPassEntities is phase one: it parses a single pass result and merges
 // every entity it mentions into the canonical graph. It does NOT touch
-// relations and does NOT mark the pass extracted, so relations (phase two) can
+// claims and does NOT mark the pass extracted, so claims (phase two) can
 // be processed in a separate step once all entities for the pass are committed.
 func (r *EntitiesRepository) ExtractPassEntities(ctx context.Context, p Pass) error {
 	var res llmAnalysis
@@ -449,22 +449,22 @@ func (r *EntitiesRepository) ExtractPassEntities(ctx context.Context, p Pass) er
 	return nil
 }
 
-// ExtractPassRelations is phase two: it parses the same pass result and creates
-// a relation for every relation it declares, resolving the source/target names
+// ExtractPassClaims is phase two: it parses the same pass result and creates
+// a claim for every claim it declares, resolving the source/target names
 // to their canonical entities. Because phase one has already committed all
-// entities for this pass, every relation's endpoints resolve to an entity that
+// entities for this pass, every claim's endpoints resolve to an entity that
 // actually exists (either just created or carried over from an earlier pass).
-// The pass is marked extracted only after relations are processed, so a
+// The pass is marked extracted only after claims are processed, so a
 // re-run that fails mid-way replays the whole pass rather than leaving it
 // half-wired. Parse failures are treated as "nothing to extract".
-func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) error {
+func (r *EntitiesRepository) ExtractPassClaims(ctx context.Context, p Pass) error {
 	defer r.markExtracted(p.ID)
 
 	var res llmAnalysis
 	if err := json.Unmarshal([]byte(p.Result), &res); err != nil {
 		return nil
 	}
-	for _, rel := range res.Relations {
+	for _, rel := range res.Claims {
 		if rel.Source == "" || rel.Target == "" || rel.Type == "" {
 			continue
 		}
@@ -473,7 +473,7 @@ func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) e
 			return err
 		}
 		if !ok {
-			log.Printf("relation source entity %q not found; skipping relation", rel.Source)
+			log.Printf("claim source entity %q not found; skipping claim", rel.Source)
 			continue
 		}
 		dst, ok, err := r.lookupAlias(utils.CanonKey(rel.Target), "")
@@ -481,35 +481,35 @@ func (r *EntitiesRepository) ExtractPassRelations(ctx context.Context, p Pass) e
 			return err
 		}
 		if !ok {
-			log.Printf("relation target entity %q not found; skipping relation", rel.Target)
+			log.Printf("claim target entity %q not found; skipping claim", rel.Target)
 			continue
 		}
 		propsJSON, _ := json.Marshal(rel.Properties)
-		if err := r.insertRelation(src.ID, dst.ID, rel.Type, string(propsJSON), rel.Properties.Conf, p.ID, p.LinkQueueID, p.ChunkIndex); err != nil {
+		if err := r.insertClaim(src.ID, dst.ID, rel.Type, string(propsJSON), rel.Properties.Conf, p.ID, p.LinkQueueID, p.ChunkIndex); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// insertRelation persists one relation between two canonical entities and
+// insertClaim persists one claim between two canonical entities and
 // publishes an entity lifecycle event for each endpoint so downstream consumers
 // learn that the entity's knowledge graph changed.
-func (r *EntitiesRepository) insertRelation(sourceID, targetID int, relType, propsJSON, conf string, passID, linkID, chunk int) error {
-	// Guard against duplicate relations: the relations phase may be replayed
-	// (e.g. after a partial failure), so only insert when no relation with the
+func (r *EntitiesRepository) insertClaim(sourceID, targetID int, relType, propsJSON, conf string, passID, linkID, chunk int) error {
+	// Guard against duplicate claims: the claims phase may be replayed
+	// (e.g. after a partial failure), so only insert when no claim with the
 	// same endpoint pair, type and originating pass already exists.
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"INSERT INTO relations (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
+		"INSERT INTO claims (source_id, target_id, type, properties, confidence, pass_id, link_id, chunk_index) "+
 			"SELECT {}, {}, {}, {}, {}, {}, {}, {} "+
 			"WHERE NOT EXISTS ("+
-			"SELECT 1 FROM relations "+
+			"SELECT 1 FROM claims "+
 			"WHERE pass_id = {} AND source_id = {} AND target_id = {} AND type = {})",
 		sourceID, targetID, relType, propsJSON, conf, passID, linkID, chunk,
 		passID, sourceID, targetID, relType)); err != nil {
 		return err
 	}
-	// Emit an entity event for both endpoints: the relation edits their graph.
+	// Emit an entity event for both endpoints: the claim edits their graph.
 	if src, err := r.GetEntity(sourceID); err == nil {
 		r.publishEvent(src.ID, src.DisplayName)
 	}
@@ -526,7 +526,7 @@ func (r *EntitiesRepository) markExtracted(passID int) {
 
 // ResetGraph drops the entire canonical knowledge graph and unmarks every pass
 // as extracted so the reconcile command can rebuild it from scratch. Entities
-// cascade to aliases/mentions/relations; the standalone FTS index is cleared
+// cascade to aliases/mentions/claims; the standalone FTS index is cleared
 // explicitly. Each step is logged so the operator can follow the wipe.
 func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 	if FTSAvailable() {
@@ -535,8 +535,8 @@ func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 			return err
 		}
 	}
-	log.Println("reset: deleting entities (cascades aliases, mentions, relations, queue)")
-	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM relations")); err != nil {
+	log.Println("reset: deleting entities (cascades aliases, mentions, claims, queue)")
+	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM claims")); err != nil {
 		return err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf("DELETE FROM entity_mentions")); err != nil {
@@ -712,11 +712,11 @@ func (r *EntitiesRepository) GlobalReconcile(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// relationTextBlock flattens a relation's properties (details, exact quote,
+// claimTextBlock flattens a claim's properties (details, exact quote,
 // amount, when, conf) plus its confidence column into one normalized string so
-// two relations can be compared field-by-field in a single token set.
-func relationTextBlock(props, _ string) string {
-	p := ParseRelationProperties(props)
+// two claims can be compared field-by-field in a single token set.
+func claimTextBlock(props, _ string) string {
+	p := ParseClaimProperties(props)
 	var parts []string
 	if p.Details != "" {
 		parts = append(parts, p.Details)
@@ -727,43 +727,43 @@ func relationTextBlock(props, _ string) string {
 	return strings.Join(parts, " ")
 }
 
-// relationsClose reports whether two relations' property text blocks are close
+// claimsClose reports whether two claims' property text blocks are close
 // enough to be duplicates. Two empty blocks are duplicates (they carry no
 // distinguishing detail), otherwise the blocks must pass the token-similarity
 // threshold.
-func relationsClose(a, b string) bool {
+func claimsClose(a, b string) bool {
 	if a == "" && b == "" {
 		return true
 	}
 	if a == "" || b == "" {
 		return false
 	}
-	return len(a) > 100 && utils.Similarity(a, b) >= relationDedupThreshold
+	return len(a) > 100 && utils.Similarity(a, b) >= claimDedupThreshold
 }
 
-// relationDedupGroup keys relations that may duplicate: the same ordered pair of
-// endpoints and the same relation type.
-type relationDedupGroup struct {
+// claimDedupGroup keys claims that may duplicate: the same ordered pair of
+// endpoints and the same claim type.
+type claimDedupGroup struct {
 	source, target int
 	relType        string
 }
 
-// DedupeRelations drops duplicate relations: rows that share the same ordered
-// entity pair and relation type and whose properties, flattened to a text block,
+// DedupeClaims drops duplicate claims: rows that share the same ordered
+// entity pair and claim type and whose properties, flattened to a text block,
 // are very close. For each such pair the row with the shorter text block is
-// deleted (ties keep the earlier row). It returns the number of relations
+// deleted (ties keep the earlier row). It returns the number of claims
 // deleted and publishes an entity event for every affected endpoint so
 // downstream consumers rebuild their state.
-func (r *EntitiesRepository) DedupeRelations(ctx context.Context) (int, error) {
+func (r *EntitiesRepository) DedupeClaims(ctx context.Context) (int, error) {
 	rels, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
-		"SELECT {*} FROM relations ORDER BY id"), RelationMapper)
+		"SELECT {*} FROM claims ORDER BY id"), ClaimMapper)
 	if err != nil {
 		return 0, err
 	}
 
-	groups := make(map[relationDedupGroup][]*Relation)
+	groups := make(map[claimDedupGroup][]*Claim)
 	for i := range rels {
-		k := relationDedupGroup{min(rels[i].SourceID, rels[i].TargetID), max(rels[i].SourceID, rels[i].TargetID), rels[i].Type}
+		k := claimDedupGroup{min(rels[i].SourceID, rels[i].TargetID), max(rels[i].SourceID, rels[i].TargetID), rels[i].Type}
 		groups[k] = append(groups[k], &rels[i])
 	}
 
@@ -773,16 +773,16 @@ func (r *EntitiesRepository) DedupeRelations(ctx context.Context) (int, error) {
 		if len(group) < 2 {
 			continue
 		}
-		// Map each relation to its text block and sort descending by block length
+		// Map each claim to its text block and sort descending by block length
 		// so the greedy pass always keeps the fullest (longest) variant and drops
 		// any shorter one that is close enough to it.
 		type candidate struct {
-			rel *Relation
+			rel *Claim
 			blk string
 		}
 		cands := make([]candidate, 0, len(group))
 		for _, rel := range group {
-			cands = append(cands, candidate{rel, relationTextBlock(rel.Properties, rel.Confidence)})
+			cands = append(cands, candidate{rel, claimTextBlock(rel.Properties, rel.Confidence)})
 		}
 		sort.Slice(cands, func(i, j int) bool { return len(cands[i].blk) > len(cands[j].blk) })
 
@@ -790,14 +790,14 @@ func (r *EntitiesRepository) DedupeRelations(ctx context.Context) (int, error) {
 		for _, c := range cands {
 			dup := false
 			for _, k := range kept {
-				if relationsClose(c.blk, k.blk) {
+				if claimsClose(c.blk, k.blk) {
 					dup = true
 					break
 				}
 			}
 			if dup {
 				if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-					"DELETE FROM relations WHERE id = {}", c.rel.ID)); err != nil {
+					"DELETE FROM claims WHERE id = {}", c.rel.ID)); err != nil {
 					return deleted, err
 				}
 				affected[c.rel.SourceID] = struct{}{}
@@ -854,21 +854,21 @@ func (r *EntitiesRepository) reconcile(a, b Entity, prefer *int, keepName bool) 
 		return Entity{}, err
 	}
 
-	// Redirect relations that pointed at the loser to the survivor so the
-	// knowledge graph stays consistent after a merge. A relation whose both
+	// Redirect claims that pointed at the loser to the survivor so the
+	// knowledge graph stays consistent after a merge. A claim whose both
 	// endpoints collapse onto the survivor becomes a self-loop and is dropped.
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"UPDATE OR IGNORE relations SET source_id = {} WHERE source_id = {}",
+		"UPDATE OR IGNORE claims SET source_id = {} WHERE source_id = {}",
 		survivor.ID, loser.ID)); err != nil {
 		return Entity{}, err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"UPDATE OR IGNORE relations SET target_id = {} WHERE target_id = {}",
+		"UPDATE OR IGNORE claims SET target_id = {} WHERE target_id = {}",
 		survivor.ID, loser.ID)); err != nil {
 		return Entity{}, err
 	}
 	if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
-		"DELETE FROM relations WHERE source_id = target_id")); err != nil {
+		"DELETE FROM claims WHERE source_id = target_id")); err != nil {
 		return Entity{}, err
 	}
 	loserAliases, err := r.aliasesFor(loser.ID)
@@ -1011,7 +1011,7 @@ type llmAnalysis struct {
 			Name string `json:"name"`
 		} `json:"properties"`
 	} `json:"entities"`
-	Relations []struct {
+	Claims []struct {
 		Source     string `json:"source"`
 		Target     string `json:"target"`
 		Type       string `json:"type"`
@@ -1022,5 +1022,5 @@ type llmAnalysis struct {
 			When       string `json:"when"`
 			Conf       string `json:"conf"`
 		} `json:"properties"`
-	} `json:"relations"`
+	} `json:"claims"`
 }

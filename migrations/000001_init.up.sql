@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS entity_mentions (
     PRIMARY KEY (entity_id, pass_id, chunk_index)
 );
 
--- Records entity merges so a future relation-reconcile step can redirect
+-- Records entity merges so a future claim-reconcile step can redirect
 -- old entity ids to their survivor (old_id is unique: an entity merges once).
 CREATE TABLE IF NOT EXISTS entity_redirects (
     old_id INTEGER NOT NULL,

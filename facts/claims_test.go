@@ -11,26 +11,26 @@ import (
 	utils "meo.ru/rolodex/facts/utils"
 )
 
-// insertRawRelation inserts a relations row directly, bypassing insertRelation's
+// insertRawClaim inserts a claims row directly, bypassing insertClaim's
 // idempotency guard, so a test can plant exact duplicate rows to exercise
-// DedupeRelations. It returns the new row's id.
-func insertRawRelation(t *testing.T, db *sql.DB, src, dst int, typ, props, conf string) int {
+// DedupeClaims. It returns the new row's id.
+func insertRawClaim(t *testing.T, db *sql.DB, src, dst int, typ, props, conf string) int {
 	t.Helper()
 	res, err := sq.Exec(db, sq.SQLite.Queryf(
-		"INSERT INTO relations (source_id, target_id, type, properties, confidence) VALUES ({}, {}, {}, {}, {})",
+		"INSERT INTO claims (source_id, target_id, type, properties, confidence) VALUES ({}, {}, {}, {}, {})",
 		src, dst, typ, props, conf))
 	if err != nil {
-		t.Fatalf("insert raw relation: %v", err)
+		t.Fatalf("insert raw claim: %v", err)
 	}
 	return int(res.LastInsertId)
 }
 
-// TestExtractPassStoresRelation verifies that a pass whose result carries both
-// entities and a relation yields exactly one relations row, with the source and
+// TestExtractPassStoresClaim verifies that a pass whose result carries both
+// entities and a claim yields exactly one claims row, with the source and
 // target resolved to the canonical entity ids (not the raw model ids), the
-// relation type preserved, the properties JSON stored verbatim, and the pass/link
+// claim type preserved, the properties JSON stored verbatim, and the pass/link
 // provenance attached.
-func TestExtractPassStoresRelation(t *testing.T) {
+func TestExtractPassStoresClaim(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
@@ -43,7 +43,7 @@ func TestExtractPassStoresRelation(t *testing.T) {
 			{"id":"ACME_STARTUP","type":"Startup","properties":{"name":"Acme"}}
 
 		],
-		"relations": [
+		"claims": [
 			{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED",
 			 "properties":{"details":"co-founder","exact_quote":"Горин основал Acme","amount":"~","when":"2020","conf":"exact"}}
 		]
@@ -53,13 +53,13 @@ func TestExtractPassStoresRelation(t *testing.T) {
 		t.Fatalf("ExtractPass: %v", err)
 	}
 
-	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
-		t.Fatalf("expected 1 relation, got %d", n)
+		t.Fatalf("expected 1 claim, got %d", n)
 	}
 
 	src, ok, _ := repo.lookupAlias(utils.CanonKey("GORIN_EVGENIY"), "")
@@ -71,15 +71,15 @@ func TestExtractPassStoresRelation(t *testing.T) {
 		t.Fatal("target entity not found")
 	}
 
-	rel, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM relations LIMIT 1"), RelationMapper)
+	rel, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM claims LIMIT 1"), ClaimMapper)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rel.SourceID != src.ID || rel.TargetID != dst.ID {
-		t.Errorf("relation endpoints = %d->%d, want %d->%d", rel.SourceID, rel.TargetID, src.ID, dst.ID)
+		t.Errorf("claim endpoints = %d->%d, want %d->%d", rel.SourceID, rel.TargetID, src.ID, dst.ID)
 	}
 	if rel.Type != "FOUNDED" {
-		t.Errorf("relation type = %q, want FOUNDED", rel.Type)
+		t.Errorf("claim type = %q, want FOUNDED", rel.Type)
 	}
 	if rel.PassID != p.ID || rel.LinkID != linkID || rel.ChunkIndex != 0 {
 		t.Errorf("provenance = (pass=%d,link=%d,chunk=%d), want (pass=%d,link=%d,chunk=%d)",
@@ -91,19 +91,19 @@ func TestExtractPassStoresRelation(t *testing.T) {
 		When       string `json:"when"`
 	}
 	if err := json.Unmarshal([]byte(rel.Properties), &props); err != nil {
-		t.Fatalf("unmarshal relation properties: %v", err)
+		t.Fatalf("unmarshal claim properties: %v", err)
 	}
 	if props.ExactQuote != "Горин основал Acme" {
-		t.Errorf("relation exact_quote = %q, want Горин основал Acme", props.ExactQuote)
+		t.Errorf("claim exact_quote = %q, want Горин основал Acme", props.ExactQuote)
 	}
 }
 
-// TestExtractPassResolvesRelationToPreExistingEntity checks that a relation may
+// TestExtractPassResolvesClaimToPreExistingEntity checks that a claim may
 // reference an entity that already exists from a previous pass (not re-emitted in
 // the current chunk). The alias registered when the entity was first extracted
 // lets lookupAlias resolve the model id to the existing canonical entity, so the
-// relation links to that id rather than creating a new one.
-func TestExtractPassResolvesRelationToPreExistingEntity(t *testing.T) {
+// claim links to that id rather than creating a new one.
+func TestExtractPassResolvesClaimToPreExistingEntity(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
@@ -121,59 +121,59 @@ func TestExtractPassResolvesRelationToPreExistingEntity(t *testing.T) {
 		t.Fatal("entity not found after pass 1")
 	}
 
-	// Pass 2: a new entity plus a relation to the pre-existing one.
+	// Pass 2: a new entity plus a claim to the pre-existing one.
 	p2, _ := passes.UpsertPass(linkID, "d", 1, 0, 5, "t", "h",
 		`{"entities":[{"id":"ACME_STARTUP","type":"Startup","properties":{"name":"Acme"}}],
-		  "relations":[{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED","properties":{}}]}`)
+		  "claims":[{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED","properties":{}}]}`)
 	if err := repo.ExtractPass(ctx, p2); err != nil {
 		t.Fatalf("ExtractPass 2: %v", err)
 	}
 
-	src, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT source_id FROM relations LIMIT 1"),
+	src, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT source_id FROM claims LIMIT 1"),
 		func(row *sq.Row) int { return row.Int("source_id") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if src != existing.ID {
-		t.Errorf("relation source = %d, want pre-existing entity %d", src, existing.ID)
+		t.Errorf("claim source = %d, want pre-existing entity %d", src, existing.ID)
 	}
 }
 
-// TestExtractPassSkipsRelationWithUnknownEntity reproduces the "missing entity"
-// policy: a relation whose source or target id was never extracted is dropped (no
-// relations row) and a warning is logged, so a typo or cross-chunk reference that
+// TestExtractPassSkipsClaimWithUnknownEntity reproduces the "missing entity"
+// policy: a claim whose source or target id was never extracted is dropped (no
+// claims row) and a warning is logged, so a typo or cross-chunk reference that
 // never materializes does not corrupt the graph.
-func TestExtractPassSkipsRelationWithUnknownEntity(t *testing.T) {
+func TestExtractPassSkipsClaimWithUnknownEntity(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
 	repo := newTestRepo(t, db)
 	ctx := context.Background()
 
-	// The only entity present is ACME; the relation's source GORIN was never seen.
+	// The only entity present is ACME; the claim's source GORIN was never seen.
 	p, _ := passes.UpsertPass(linkID, "d", 0, 0, 5, "t", "h",
 		`{"entities":[{"id":"ACME_STARTUP","type":"Startup","properties":{"name":"Acme"}}],
-		  "relations":[{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED","properties":{}}]}`)
+		  "claims":[{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED","properties":{}}]}`)
 	if err := repo.ExtractPass(ctx, p); err != nil {
 		t.Fatalf("ExtractPass: %v", err)
 	}
 
-	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("expected 0 relations (unknown source skipped), got %d", n)
+		t.Fatalf("expected 0 claims (unknown source skipped), got %d", n)
 	}
 }
 
-// TestReconcileRedirectsRelations verifies that merging the loser entity rewires
-// the relations that pointed at it onto the survivor. A third entity is used as
-// the other endpoint so the redirected relation is not a self-loop. After merging
-// Bob into Alice, a relation Carol->Bob must become Carol->Alice and Bob's id must
-// no longer appear in the relations table.
-func TestReconcileRedirectsRelations(t *testing.T) {
+// TestReconcileRedirectsClaims verifies that merging the loser entity rewires
+// the claims that pointed at it onto the survivor. A third entity is used as
+// the other endpoint so the redirected claim is not a self-loop. After merging
+// Bob into Alice, a claim Carol->Bob must become Carol->Alice and Bob's id must
+// no longer appear in the claims table.
+func TestReconcileRedirectsClaims(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
 
@@ -191,7 +191,7 @@ func TestReconcileRedirectsRelations(t *testing.T) {
 	}
 	// Carol -> Bob, with Bob as the future loser.
 	linkID, passID := insertLinkPass(t, db)
-	if err := repo.insertRelation(carol.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
+	if err := repo.insertClaim(carol.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,33 +200,33 @@ func TestReconcileRedirectsRelations(t *testing.T) {
 		t.Fatalf("MergeEntities: %v", err)
 	}
 
-	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
-		t.Fatalf("expected 1 relation after merge, got %d", n)
+		t.Fatalf("expected 1 claim after merge, got %d", n)
 	}
-	rel, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM relations LIMIT 1"), RelationMapper)
+	rel, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM claims LIMIT 1"), ClaimMapper)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srcID, dstID := rel.SourceID, rel.TargetID
 	if srcID != carol.ID || dstID != alice.ID {
-		t.Errorf("relation endpoints = %d->%d, want %d->%d (Carol -> surviving Alice)", srcID, dstID, carol.ID, alice.ID)
+		t.Errorf("claim endpoints = %d->%d, want %d->%d (Carol -> surviving Alice)", srcID, dstID, carol.ID, alice.ID)
 	}
 	// The merged-away Bob id must not remain anywhere in the graph.
 	if srcID == bob.ID || dstID == bob.ID {
-		t.Errorf("loser id %d still present in relation %d->%d", bob.ID, srcID, dstID)
+		t.Errorf("loser id %d still present in claim %d->%d", bob.ID, srcID, dstID)
 	}
 }
 
-// TestReconcileDropsRelationSelfLoop verifies that when both endpoints of a
-// relation collapse onto the same survivor (e.g. Alice->Bob with Bob merged into
+// TestReconcileDropsClaimSelfLoop verifies that when both endpoints of a
+// claim collapse onto the same survivor (e.g. Alice->Bob with Bob merged into
 // Alice), the resulting self-loop is removed rather than kept as a degenerate
 // edge in the knowledge graph.
-func TestReconcileDropsRelationSelfLoop(t *testing.T) {
+func TestReconcileDropsClaimSelfLoop(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
 
@@ -240,7 +240,7 @@ func TestReconcileDropsRelationSelfLoop(t *testing.T) {
 	}
 	// Alice -> Bob: merging Bob into Alice makes this a self-loop.
 	linkID, passID := insertLinkPass(t, db)
-	if err := repo.insertRelation(alice.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
+	if err := repo.insertClaim(alice.ID, bob.ID, "EMPLOYED_AT", "{}", "", passID, linkID, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,22 +248,22 @@ func TestReconcileDropsRelationSelfLoop(t *testing.T) {
 		t.Fatalf("MergeEntities: %v", err)
 	}
 
-	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	n, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("expected self-loop relation to be dropped, got %d rows", n)
+		t.Fatalf("expected self-loop claim to be dropped, got %d rows", n)
 	}
 }
 
-// TestExtractPassRelationPublishesEntityEvents verifies the entity-lifecycle
-// requirement: when a relation is inserted, an event is published for BOTH the
+// TestExtractPassClaimPublishesEntityEvents verifies the entity-lifecycle
+// requirement: when a claim is inserted, an event is published for BOTH the
 // source and the target entity so downstream consumers learn their graph changed.
 // The events are drained from the real goqite queue and checked against the two
 // endpoint ids.
-func TestExtractPassRelationPublishesEntityEvents(t *testing.T) {
+func TestExtractPassClaimPublishesEntityEvents(t *testing.T) {
 	db := setupTestDB(t)
 	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
@@ -275,7 +275,7 @@ func TestExtractPassRelationPublishesEntityEvents(t *testing.T) {
 			{"id":"GORIN_EVGENIY","type":"Person","properties":{"name":"Евгений Горин"}},
 			{"id":"ACME_STARTUP","type":"Startup","properties":{"name":"Acme"}}
 		],
-		"relations": [
+		"claims": [
 			{"source":"GORIN_EVGENIY","target":"ACME_STARTUP","type":"FOUNDED","properties":{}}
 		]
 	}`
@@ -299,19 +299,19 @@ func TestExtractPassRelationPublishesEntityEvents(t *testing.T) {
 		got[e.ID] = true
 	}
 	if !got[src.ID] {
-		t.Errorf("expected entity event for relation source entity %d; events=%+v", src.ID, events)
+		t.Errorf("expected entity event for claim source entity %d; events=%+v", src.ID, events)
 	}
 	if !got[dst.ID] {
-		t.Errorf("expected entity event for relation target entity %d; events=%+v", dst.ID, events)
+		t.Errorf("expected entity event for claim target entity %d; events=%+v", dst.ID, events)
 	}
 }
 
-// TestDedupeRelationsDropsShorterNearIdentical verifies that two relations with
+// TestDedupeClaimsDropsShorterNearIdentical verifies that two claims with
 // the same ordered endpoint pair and type, whose properties flatten to nearly
 // identical text blocks longer than 100 characters (the current dedup proximity
 // guard), are deduplicated: the row with the shorter text block is deleted and
 // only the more detailed one survives.
-func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
+func TestDedupeClaimsDropsShorterNearIdentical(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
 	ctx := context.Background()
@@ -327,10 +327,10 @@ func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
 	// a trailing clause and is therefore the shorter one.
 	long := `{"details":"Founded Acme in 2020 and took over as Chief Executive Officer of the entire company, overseeing all product lines, engineering teams, sales operations and global expansion","exact_quote":"Alice founded Acme"}`
 	short := `{"details":"Founded Acme in 2020 and took over as Chief Executive Officer of the entire company, overseeing all product lines, engineering teams and sales operations","exact_quote":"Alice founded Acme"}`
-	insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", long, "exact")
-	shortID := insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", short, "exact")
+	insertRawClaim(t, db, a.ID, b.ID, "FOUNDED", long, "exact")
+	shortID := insertRawClaim(t, db, a.ID, b.ID, "FOUNDED", short, "exact")
 
-	deleted, err := repo.DedupeRelations(ctx)
+	deleted, err := repo.DedupeClaims(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,26 +339,26 @@ func TestDedupeRelationsDropsShorterNearIdentical(t *testing.T) {
 	}
 
 	// The shorter variant is gone, the longer one survives.
-	if _, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT id FROM relations WHERE id = {}", shortID),
+	if _, err := sq.FetchOne(db, sq.SQLite.Queryf("SELECT id FROM claims WHERE id = {}", shortID),
 		func(row *sq.Row) int { return row.Int("id") }); err == nil {
-		t.Errorf("expected the shorter duplicate relation %d to be deleted", shortID)
+		t.Errorf("expected the shorter duplicate claim %d to be deleted", shortID)
 	}
-	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if count != 1 {
-		t.Errorf("expected 1 relation to remain, got %d", count)
+		t.Errorf("expected 1 claim to remain, got %d", count)
 	}
 	// The surviving variant must be the longer, fuller one.
-	rem, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM relations LIMIT 1"), RelationMapper)
+	rem, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT {*} FROM claims LIMIT 1"), ClaimMapper)
 	if rem.Properties != long {
-		t.Errorf("expected the longer relation to survive, got %q", rem.Properties)
+		t.Errorf("expected the longer claim to survive, got %q", rem.Properties)
 	}
 }
 
-// TestDedupeRelationsKeepsDifferentTypeAndDifferentText verifies that DedupeRelations
-// leaves relations alone when they differ by type or when their property text
+// TestDedupeClaimsKeepsDifferentTypeAndDifferentText verifies that DedupeClaims
+// leaves claims alone when they differ by type or when their property text
 // blocks are not close, so the dedup only fires on genuine near-identical pairs.
-func TestDedupeRelationsKeepsDifferentTypeAndDifferentText(t *testing.T) {
+func TestDedupeClaimsKeepsDifferentTypeAndDifferentText(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
 	ctx := context.Background()
@@ -366,50 +366,50 @@ func TestDedupeRelationsKeepsDifferentTypeAndDifferentText(t *testing.T) {
 	a, _ := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	b, _ := repo.createEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
 
-	// Same pair but a different relation type -> not a duplicate.
-	insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", `{"details":"founded Acme"}`, "")
-	insertRawRelation(t, db, a.ID, b.ID, "INVESTED_IN", `{"details":"invested in Acme"}`, "")
+	// Same pair but a different claim type -> not a duplicate.
+	insertRawClaim(t, db, a.ID, b.ID, "FOUNDED", `{"details":"founded Acme"}`, "")
+	insertRawClaim(t, db, a.ID, b.ID, "INVESTED_IN", `{"details":"invested in Acme"}`, "")
 	// Same pair and type but clearly different text -> not a duplicate.
-	insertRawRelation(t, db, b.ID, a.ID, "EMPLOYED_AT", `{"details":"works at Alice as a plumber"}`, "")
-	insertRawRelation(t, db, b.ID, a.ID, "EMPLOYED_AT", `{"details":"serves as chief gardener"}`, "")
+	insertRawClaim(t, db, b.ID, a.ID, "EMPLOYED_AT", `{"details":"works at Alice as a plumber"}`, "")
+	insertRawClaim(t, db, b.ID, a.ID, "EMPLOYED_AT", `{"details":"serves as chief gardener"}`, "")
 
-	deleted, err := repo.DedupeRelations(ctx)
+	deleted, err := repo.DedupeClaims(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 0 {
 		t.Fatalf("expected nothing to be deduplicated, got %d deletions", deleted)
 	}
-	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if count != 4 {
-		t.Errorf("expected all 4 relations to remain, got %d", count)
+		t.Errorf("expected all 4 claims to remain, got %d", count)
 	}
 }
 
-// TestDedupeRelationsEmptyBlocks verifies that relations with an identical (empty)
+// TestDedupeClaimsEmptyBlocks verifies that claims with an identical (empty)
 // property block are treated as duplicates for the same pair and type, since
 // empty blocks carry no distinguishing detail.
-func TestDedupeRelationsEmptyBlocks(t *testing.T) {
+func TestDedupeClaimsEmptyBlocks(t *testing.T) {
 	db := setupTestDB(t)
 	repo := newTestRepo(t, db)
 	ctx := context.Background()
 
 	a, _ := repo.createEntity("Alice", []string{"Person"}, []byte(`{"name":"Alice"}`))
 	b, _ := repo.createEntity("Acme", []string{"Startup"}, []byte(`{"name":"Acme"}`))
-	insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", `{}`, "")
-	insertRawRelation(t, db, a.ID, b.ID, "FOUNDED", `{}`, "")
+	insertRawClaim(t, db, a.ID, b.ID, "FOUNDED", `{}`, "")
+	insertRawClaim(t, db, a.ID, b.ID, "FOUNDED", `{}`, "")
 
-	deleted, err := repo.DedupeRelations(ctx)
+	deleted, err := repo.DedupeClaims(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 1 {
 		t.Fatalf("expected 1 empty-block duplicate dropped, got %d", deleted)
 	}
-	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM relations"),
+	count, _ := sq.FetchOne(db, sq.SQLite.Queryf("SELECT COUNT(*) AS c FROM claims"),
 		func(row *sq.Row) int { return row.Int("c") })
 	if count != 1 {
-		t.Errorf("expected 1 empty-block relation to remain, got %d", count)
+		t.Errorf("expected 1 empty-block claim to remain, got %d", count)
 	}
 }

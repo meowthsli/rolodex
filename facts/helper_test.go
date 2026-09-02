@@ -57,8 +57,8 @@ func insertLink(t *testing.T, db *sql.DB) int {
 }
 
 // insertLinkPass inserts a link_queue row and a passes row (satisfying both the
-// relations pass_id and link_id foreign keys) and returns the two ids. Tests
-// that insert relations via insertRelation use these so PRAGMA foreign_keys=ON
+// claims pass_id and link_id foreign keys) and returns the two ids. Tests
+// that insert claims via insertClaim use these so PRAGMA foreign_keys=ON
 // is never violated by a zero id.
 func insertLinkPass(t *testing.T, db *sql.DB) (linkID, passID int) {
 	t.Helper()

@@ -25,7 +25,7 @@ import (
 // be run repeatedly and is safe to re-run. With -reset it first drops the whole
 // graph and unmarks passes, rebuilding everything from the stored pass results.
 func main() {
-	reset := flag.Bool("reset", false, "drop all entities/relations and re-extract every pass")
+	reset := flag.Bool("reset", false, "drop all entities/claims and re-extract every pass")
 	sqlog := flag.Bool("sqlog", false, "print SQL query logs (with timing) to stdout")
 	flag.Parse()
 
@@ -63,7 +63,7 @@ func main() {
 	ctx := context.Background()
 
 	if *reset {
-		fmt.Print("This will DROP all entities, relations and unmark every pass for re-extraction.\nType 'yes' to continue: ")
+		fmt.Print("This will DROP all entities, claims and unmark every pass for re-extraction.\nType 'yes' to continue: ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if strings.TrimSpace(line) != "yes" {
 			log.Fatal("aborted: reset not confirmed")
@@ -86,14 +86,14 @@ func main() {
 	}
 	log.Printf("merged %d duplicate entities", merged)
 
-	// Dropping duplicate relations keeps the graph clean: relations that share
+	// Dropping duplicate claims keeps the graph clean: claims that share
 	// the same endpoint pair and type with near-identical properties are
 	// consolidated onto the variant with the fullest text block.
-	deduped, err := entities.DedupeRelations(ctx)
+	deduped, err := entities.DedupeClaims(ctx)
 	if err != nil {
-		log.Fatalf("dedupe relations: %v", err)
+		log.Fatalf("dedupe claims: %v", err)
 	}
-	log.Printf("dropped %d duplicate relations", deduped)
+	log.Printf("dropped %d duplicate claims", deduped)
 
 	// Profiles are a denormalized snapshot of the graph; after a reset, backfill
 	// or merge the stored documents must be regenerated from the new state.
@@ -116,10 +116,10 @@ func backfill(ctx context.Context, passes *facts.PassesRepository, entities *fac
 			log.Printf("extract entities pass id=%d: %v", p.ID, err)
 			continue
 		}
-		// Phase two: wire up relations now that all entities for this pass are
-		// committed, so each relation resolves to a real entity.
-		if err := entities.ExtractPassRelations(ctx, p); err != nil {
-			log.Printf("extract relations pass id=%d: %v", p.ID, err)
+		// Phase two: wire up claims now that all entities for this pass are
+		// committed, so each claim resolves to a real entity.
+		if err := entities.ExtractPassClaims(ctx, p); err != nil {
+			log.Printf("extract claims pass id=%d: %v", p.ID, err)
 			continue
 		}
 	}
