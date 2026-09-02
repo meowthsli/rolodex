@@ -289,7 +289,6 @@ func TestExtractionPromotesKnownAfterThreshold(t *testing.T) {
 // the fts5 module).
 func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	db := setupTestDB(t)
-	linkID := insertLink(t, db)
 	passes := NewPassesRepository(db)
 	repo := newTestRepo(t, db)
 	if !FTSAvailable() {
@@ -298,11 +297,14 @@ func TestGlobalReconcileMergesFuzzy(t *testing.T) {
 	ctx := context.Background()
 
 	// Two near-identical startups (one is the other plus a single extra token)
-	// -> similarity 8/9 ~0.89, above the 0.87 threshold, so they merge.
-	pA, _ := passes.UpsertPass(linkID, "d", 0, 0, 5, "t", "h", `{"entities":[{"id":"SA","type":"Startup","properties":{"name":"А Б В Г Д Е Ж Петров"}}]}`)
-	pB, _ := passes.UpsertPass(linkID, "d", 1, 0, 5, "t", "h", `{"entities":[{"id":"SB","type":"Startup","properties":{"name":"А Б В Г Д Е Ж Петров Доп"}}]}`)
+	// -> similarity 8/9 ~0.89, above the 0.87 threshold, so they merge. Each
+	// edition lives in its own link so the same-link partial-name rule (which
+	// would fold them during extraction) does not pre-empt the global fuzzy
+	// merge this test is exercising.
+	pA, _ := passes.UpsertPass(insertLink(t, db), "d", 0, 0, 5, "t", "h", `{"entities":[{"id":"SA","type":"Startup","properties":{"name":"А Б В Г Д Е Ж Петров"}}]}`)
+	pB, _ := passes.UpsertPass(insertLink(t, db), "d", 0, 0, 5, "t", "h", `{"entities":[{"id":"SB","type":"Startup","properties":{"name":"А Б В Г Д Е Ж Петров Доп"}}]}`)
 	// A Date entity with a similar name -> must NOT merge with the startup.
-	pC, _ := passes.UpsertPass(linkID, "d", 2, 0, 5, "t", "h", `{"entities":[{"id":"DT","type":"Date","properties":{"name":"А Б В Г Д Е Ж Петров Дата"}}]}`)
+	pC, _ := passes.UpsertPass(insertLink(t, db), "d", 0, 0, 5, "t", "h", `{"entities":[{"id":"DT","type":"Date","properties":{"name":"А Б В Г Д Е Ж Петров Дата"}}]}`)
 
 	for _, p := range []Pass{pA, pB, pC} {
 		if err := repo.ExtractPass(ctx, p); err != nil {

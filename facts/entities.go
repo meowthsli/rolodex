@@ -250,6 +250,24 @@ func (r *EntitiesRepository) upsertAlias(entityID int, alias, rawName string) er
 	return err
 }
 
+// dropAliases removes the given canonical aliases from an entity. It is used
+// after a same-link partial-name merge to stop a bare first/last name from
+// leaking out of the link it belongs to: the partial name is still recoverable
+// within the link via linkScopeMatch, but must not resolve globally.
+func (r *EntitiesRepository) dropAliases(entityID int, canons ...string) error {
+	for _, c := range canons {
+		if c == "" {
+			continue
+		}
+		if _, err := sq.Exec(r.db, sq.SQLite.Queryf(
+			"DELETE FROM entity_aliases WHERE entity_id = {} AND alias = {}",
+			entityID, c)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *EntitiesRepository) addMention(entityID, passID, linkID, chunk int) error {
 	_, err := sq.Exec(r.db, sq.SQLite.Queryf(
 		"INSERT OR IGNORE INTO entity_mentions (entity_id, pass_id, link_id, chunk_index) VALUES ({}, {}, {}, {})",
@@ -567,6 +585,29 @@ func (r *EntitiesRepository) ResetGraph(ctx context.Context) error {
 // entity may become the survivor or the loser. If no match exists the new entity
 // stands on its own. This makes the per-mention path use the exact same merge
 // operation as GlobalReconcile.
+// linkScopeMatch returns the same-link entity (if any) whose canonical name
+// tokens are related to name by the partial-name rule: one name is a strict
+// token-subset of the other, with the fuller side holding at least two tokens.
+// This lets a mention like "Alex" or "Karp" resolve to a same-link "Alex Karp"
+// regardless of chunk order, because the check runs in both directions. Only
+// entities that appeared in the same link are considered, so a bare first name
+// never bleeds across links. ok reports whether a candidate was found.
+func (r *EntitiesRepository) linkScopeMatch(linkID, selfID int, name string) (Entity, bool, error) {
+	ents, err := sq.FetchAll(r.db, sq.SQLite.Queryf(
+		"SELECT {*} FROM entities WHERE id IN ("+
+			"SELECT entity_id FROM entity_mentions WHERE link_id = {}) AND id != {}",
+		linkID, selfID), EntityMapper)
+	if err != nil {
+		return Entity{}, false, err
+	}
+	for _, cand := range ents {
+		if utils.NameTokenSubset(name, cand.DisplayName) || utils.NameTokenSubset(cand.DisplayName, name) {
+			return cand, true, nil
+		}
+	}
+	return Entity{}, false, nil
+}
+
 func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.RawMessage, types []string, passID, linkID, chunk int) error {
 	// Always create the entity for this mention first.
 	e, err := r.CreateEntity(name, types, props)
@@ -609,6 +650,13 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 		}
 		return nil
 	}
+	// No global match: register this mention's names as aliases so later
+	// references can resolve it exactly. Then, as a final fallback, look within
+	// the same link for a full name this mention is a partial of (e.g. "Alex"
+	// after "Alex Karp" was already extracted from another chunk of the link).
+	// The check is symmetric in direction, so it works whichever chunk came
+	// first, and reconcile keeps the fuller name and folds the partial's
+	// aliases/mentions onto the survivor.
 	if err := r.upsertAlias(e.ID, utils.CanonKey(name), name); err != nil {
 		return err
 	}
@@ -616,6 +664,32 @@ func (r *EntitiesRepository) resolveAndMerge(name, modelID string, props json.Ra
 		if err := r.upsertAlias(e.ID, utils.CanonKey(modelID), modelID); err != nil {
 			return err
 		}
+	}
+	if cand, ok, err := r.linkScopeMatch(linkID, e.ID, name); err != nil {
+		return err
+	} else if ok {
+		// Determine which side is the partial name before reconcile folds them:
+		// reconcile keeps the fuller name as the survivor, so its aliases survive
+		// and the partial side's aliases get carried over. We record the partial
+		// side's canonical forms now so we can drop them off the survivor below.
+		partialCanon := utils.CanonKey(cand.DisplayName)
+		partialModelCanon := ""
+		if utils.NameTokenSubset(name, cand.DisplayName) {
+			partialCanon = utils.CanonKey(name)
+			partialModelCanon = utils.CanonKey(modelID)
+		}
+		e, err = r.reconcile(e, cand, nil, false)
+		if err != nil {
+			return err
+		}
+		// Drop the folded partial name's aliases off the survivor so a bare
+		// first/last name never leaks out of the link it came from. Partial
+		// mentions from the SAME link are still folded by linkScopeMatch, but the
+		// same name in a different link stays a separate entity.
+		if err := r.dropAliases(e.ID, partialCanon, partialModelCanon); err != nil {
+			return err
+		}
+		return nil
 	}
 	return r.syncFTS(e.ID)
 }

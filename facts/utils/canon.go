@@ -273,6 +273,32 @@ func canonTokens(s string) []string {
 	return out
 }
 
+// NameTokenSubset reports whether partial's canonical name tokens form a STRICT
+// (proper) subset of full's canonical name tokens, with full carrying at least
+// two tokens and partial at least one. This is the rule for recognizing a
+// partial name (a bare first or last name like "Alex" or "Karp") as referring to
+// a full name already seen in the same link ("Alex Karp"). Requiring the full
+// side to have >=2 tokens avoids merging two unrelated single-token names, and
+// "proper" avoids matching a name against itself.
+func NameTokenSubset(partial, full string) bool {
+	pt := canonTokens(partial)
+	ft := canonTokens(full)
+	if len(pt) == 0 || len(pt) >= len(ft) || len(ft) < 2 {
+		return false
+	}
+	setF := make(map[string]bool, len(ft))
+	for _, t := range ft {
+		setF[t] = true
+	}
+	for _, t := range pt {
+		if !setF[t] {
+			return false
+		}
+	}
+	return true
+}
+
+
 // Similarity scores how likely two names refer to the same entity. It is the
 // Jaccard index over CanonKey token sets, with an abbreviation bonus: a token
 // like "p." (single letter + dot) is treated as matching any token starting
